@@ -13,19 +13,19 @@ if [ -f "$FREE_FILE" ]; then
     # 切换0和1
     if [ "$CURRENT" = "0" ]; then
         echo "1" > "$FREE_FILE"
-        echo "已切换: 0 -> 1"
+        echo "已切换为PPS"
     elif [ "$CURRENT" = "1" ]; then
         echo "0" > "$FREE_FILE"
-        echo "已切换: 1 -> 0"
+        echo "已切换为MIPPS"
     else
-        # 如果内容不是0或1，默认设置为0
-        echo "0" > "$FREE_FILE"
-        echo "内容无效，已重置为: 0"
+        # 如果内容不是0或1，默认设置为1
+        echo "1" > "$FREE_FILE"
+        echo "内容无效，已重置为PPS"
     fi
 else
-    # 如果文件不存在，创建并设置为0
-    echo "0" > "$FREE_FILE"
-    echo "文件不存在，已创建并设置为: 0"
+    # 如果文件不存在，创建并设置为1
+    echo "1" > "$FREE_FILE"
+    echo "文件不存在，已创建并设置为PPS"
 fi
 
 sleep 0.3

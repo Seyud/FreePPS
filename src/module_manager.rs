@@ -1,0 +1,127 @@
+#[cfg(unix)]
+use crate::MODULE_PROP;
+use crate::error::FreePPSError;
+use crate::monitor::file_monitor::FileMonitor;
+use crate::{DISABLE_FILE, FREE_FILE, PD_VERIFIED_PATH};
+use anyhow::Result;
+use std::fs;
+use std::path::Path;
+
+/// 模块状态管理器
+pub struct ModuleManager;
+
+impl ModuleManager {
+    pub fn new() -> Result<Self> {
+        Ok(Self)
+    }
+
+    /// 初始化模块状态
+    pub fn initialize_module(&self) -> Result<()> {
+        crate::info!("开始模块初始化...");
+
+        // 确保free文件存在
+        if !Path::new(FREE_FILE).exists() {
+            crate::info!("free文件不存在，创建并设置为1");
+            FileMonitor::write_file_content(FREE_FILE, "1")?;
+        }
+
+        // 确保disable文件不存在（模块启用状态）
+        if Path::new(DISABLE_FILE).exists() {
+            crate::info!("检测到disable文件，删除以启用模块");
+            fs::remove_file(DISABLE_FILE).map_err(FreePPSError::FileOperation)?;
+        }
+
+        // 读取当前free文件状态并主动更新描述
+        let free_content = FileMonitor::read_file_content(FREE_FILE)?;
+        crate::info!("当前free文件内容: {}", free_content);
+
+        if free_content == "1" {
+            crate::info!("模块启用状态，更新描述");
+            self.update_module_description(true)?;
+
+            // 模块初始化时设置PD验证为1
+            let pd_verifier = crate::monitor::PdVerifier::new()?;
+            if Path::new(PD_VERIFIED_PATH).exists() {
+                pd_verifier.set_pd_verified(true)?;
+                crate::info!("模块初始化时已设置PD验证状态为1");
+            } else {
+                crate::warn!("PD验证文件不存在，跳过设置");
+            }
+        } else {
+            crate::info!("模块暂停状态，更新描述");
+            self.update_module_description(false)?;
+        }
+
+        crate::info!("模块初始化完成");
+        Ok(())
+    }
+
+    /// 更新module.prop描述
+    #[cfg(unix)]
+    pub fn update_module_description(&self, enabled: bool) -> Result<()> {
+        let prop_content = FileMonitor::read_file_content(MODULE_PROP)?;
+        let new_description = if enabled {
+            "[⚡✅PPS已支持] 启用搭载澎湃 P1、P2 芯片机型的公版 PPS 支持。（感谢\"酷安@低线阻狂魔\"提供方案）"
+        } else {
+            "[⚡⏸️PPS已暂停] 启用搭载澎湃 P1、P2 芯片机型的公版 PPS 支持。（感谢\"酷安@低线阻狂魔\"提供方案）"
+        };
+
+        let updated_content = prop_content
+            .lines()
+            .map(|line| {
+                if line.starts_with("description=") {
+                    format!("description={}", new_description)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        FileMonitor::write_file_content(MODULE_PROP, &updated_content)?;
+        crate::info!("更新module.prop描述为: {}", new_description);
+        Ok(())
+    }
+
+    /// 更新module.prop描述（Windows版本）
+    #[cfg(windows)]
+    pub fn update_module_description(&self, _enabled: bool) -> Result<()> {
+        // Windows环境下不执行任何操作
+        Ok(())
+    }
+
+    /// 处理free文件变化
+    pub fn handle_free_file_change(&self, content: &str) -> Result<()> {
+        crate::info!("free文件内容: {}", content);
+
+        if content == "1" {
+            crate::info!("free文件为1，启用模块");
+            self.update_module_description(true)?;
+        } else if content == "0" {
+            crate::info!("free文件为0，暂停模块");
+            self.update_module_description(false)?;
+
+            // 恢复PD验证为0
+            let pd_verifier = crate::monitor::PdVerifier::new()?;
+            pd_verifier.set_pd_verified(false)?;
+            crate::info!("已将PD验证状态恢复为0");
+        }
+        Ok(())
+    }
+
+    /// 处理disable文件变化
+    pub fn handle_disable_file_change(&self, exists: bool) -> Result<()> {
+        if exists {
+            crate::info!("检测到disable文件创建");
+            // disable文件出现，设置free为0
+            FileMonitor::write_file_content(FREE_FILE, "0")?;
+            crate::info!("已处理disable文件创建事件");
+        } else {
+            crate::info!("检测到disable文件删除");
+            // disable文件消失，设置free为1
+            FileMonitor::write_file_content(FREE_FILE, "1")?;
+            crate::info!("已处理disable文件删除事件");
+        }
+        Ok(())
+    }
+}

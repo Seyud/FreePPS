@@ -2,11 +2,11 @@
 
 **让澎湃P1/P2芯片设备享受公版PPS快充支持！**
 
-[![版本](https://img.shields.io/badge/版本-v1.0.2-brightgreen)](https://gitee.com/Seyud/FreePPS)
+[![版本](https://img.shields.io/badge/版本-v1.0.2-brightgreen)](https://github.com/Seyud/FreePPS)
 
 ## ✨ 模块简介
 
-FreePPS 是一个专为搭载澎湃 P1、P2 快充芯片的米系设备设计的 Magisk 模块，能够**解锁并启用公版 PPS（Programmable Power Supply）快充协议支持**，让你的设备享受更好的兼容性！
+FreePPS 是一个专为搭载澎湃 P1、P2 快充芯片的米系设备设计的模块，能够**解锁并启用公版 PPS（Programmable Power Supply）快充协议支持**，让你的设备享受更好的兼容性！
 
 > ⚠️ **重要注意事项**：开启公版PPS支持后，设备将**自动关闭MIPPS（小米私有PPS协议）支持**。两种协议存在冲突，无法同时启用。请根据您的充电设备选择适合的协议。
 

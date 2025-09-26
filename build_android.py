@@ -23,30 +23,40 @@ def add_android_target():
         sys.exit(1)
 
 def run_fmt_and_clippy():
+    # 确保在项目根目录执行cargo命令
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    
     print("检查代码格式...")
-    try:
-        # 确保在项目根目录执行cargo命令
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        
-        # 先检查是否需要格式化
-        fmt_check_result = subprocess.run(["cargo", "fmt", "--", "--check"], 
-                                        cwd=project_root, 
-                                        capture_output=True, 
-                                        text=True)
-        
-        if fmt_check_result.returncode == 0:
-            print("代码格式检查通过，无需格式化")
-        else:
-            print("检测到代码格式问题，正在格式化...")
+    
+    # 先检查是否需要格式化
+    fmt_check_result = subprocess.run(["cargo", "fmt", "--", "--check"], 
+                                    cwd=project_root, 
+                                    capture_output=True, 
+                                    text=True)
+    
+    if fmt_check_result.returncode == 0:
+        print("代码格式检查通过，无需格式化")
+    else:
+        print("检测到代码格式问题，正在格式化...")
+        try:
             subprocess.run(["cargo", "fmt"], check=True, cwd=project_root)
             print("代码格式化完成")
-        
-        # 运行clippy检查
-        print("运行 clippy 检查...")
+        except subprocess.CalledProcessError as e:
+            print(f"代码格式化失败: {e}")
+            if e.stderr:
+                print(f"错误详情: {e.stderr}")
+            sys.exit(1)
+    
+    # 运行clippy检查
+    print("运行 clippy 检查...")
+    try:
         subprocess.run(["cargo", "clippy", "--", "-D", "warnings"], check=True, cwd=project_root)
         print("clippy 检查通过")
     except subprocess.CalledProcessError as e:
-        print(f"代码格式或检查失败: {e}")
+        print(f"clippy检查失败: {e}")
+        if e.stderr:
+            print(f"错误详情: {e.stderr}")
+        print("请修复上述clippy警告后重新运行")
         sys.exit(1)
 
 def build_android():

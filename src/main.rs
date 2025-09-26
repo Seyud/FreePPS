@@ -183,45 +183,108 @@ fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Res
 
     #[cfg(unix)]
     {
-        let file_monitor = FileMonitor::new()?;
-        file_monitor.add_watch(PD_VERIFIED_PATH, IN_MODIFY | IN_CLOSE_WRITE)?;
+        use crate::error::FreePPSError;
+        use std::os::raw::c_int;
 
-        info!("[{}] 开始监控PD验证状态: {}", thread_name, PD_VERIFIED_PATH);
+        // 创建uevent监控socket
+        let uevent_sock = FileMonitor::create_uevent_monitor()?;
 
-        // 主监控循环 - 纯inotify事件驱动
-        let mut buffer = [0u8; 1024];
+        // 创建epoll实例
+        let epoll_fd = unsafe { libc::epoll_create1(0) };
+        if epoll_fd == -1 {
+            unsafe {
+                libc::close(uevent_sock);
+            }
+            return Err(FreePPSError::InotifyError("无法初始化epoll".to_string()).into());
+        }
 
+        // 将uevent socket添加到epoll中
+        let mut event = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLPRI) as u32,
+            u64: uevent_sock as u64,
+        };
+
+        let result =
+            unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, uevent_sock, &mut event) };
+
+        if result == -1 {
+            unsafe {
+                libc::close(uevent_sock);
+                libc::close(epoll_fd);
+            }
+            return Err(
+                FreePPSError::InotifyError("无法将uevent socket添加到epoll".to_string()).into(),
+            );
+        }
+
+        info!(
+            "[{}] 开始通过uevent监控PD验证状态: {}",
+            thread_name, PD_VERIFIED_PATH
+        );
+
+        // 主监控循环 - epoll事件驱动
         while running.load(Ordering::Relaxed) {
-            let bytes_read = unsafe {
-                let count = buffer.len();
-                libc::read(
-                    file_monitor.inotify_fd,
-                    buffer.as_mut_ptr() as *mut std::os::raw::c_void,
-                    count,
+            let mut events: Vec<libc::epoll_event> =
+                vec![libc::epoll_event { events: 0, u64: 0 }; 10];
+
+            let nfds = unsafe {
+                libc::epoll_wait(
+                    epoll_fd,
+                    events.as_mut_ptr(),
+                    events.len() as c_int,
+                    -1, // 阻塞等待
                 )
             };
 
-            if bytes_read == -1 {
-                // 没有事件时等待1秒
-                thread::sleep(std::time::Duration::from_millis(1000));
-            } else if bytes_read > 0 {
-                info!("检测到PD验证状态变化");
+            if nfds == -1 {
+                error!("epoll_wait错误，继续监控...");
+                // 发生错误时休眠一段时间再重试，避免忙等待
+                std::thread::sleep(std::time::Duration::from_millis(5000));
+                continue;
+            } else if nfds > 0 {
+                // 检查uevent事件
+                let mut buffer = [0u8; 4096];
+                let bytes_read = unsafe {
+                    libc::recv(
+                        uevent_sock,
+                        buffer.as_mut_ptr() as *mut std::os::raw::c_void,
+                        buffer.len(),
+                        libc::MSG_DONTWAIT,
+                    )
+                };
 
-                // 检查是否应该处理（free文件为1）
-                let free_content =
-                    FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string());
+                if bytes_read > 0 {
+                    // 将接收到的数据转换为字符串
+                    let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
 
-                if free_content == "1" {
-                    // 直接检查PD验证文件内容，如果被改成0就立即写入1
-                    let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
-                    if pd_content == "0" {
-                        info!("检测到PD验证状态被改为0，立即重新设置为1");
-                        pd_verifier.set_pd_verified(true)?;
-                    } else {
-                        info!("PD验证状态正常为1，无需处理");
+                    // 检查是否与PD验证相关
+                    if uevent_data.contains("pd_verifed") || uevent_data.contains("POWER_SUPPLY") {
+                        info!("检测到电源相关uevent事件");
+
+                        // 检查是否应该处理（free文件为1）
+                        let free_content = FileMonitor::read_file_content(FREE_FILE)
+                            .unwrap_or_else(|_| "0".to_string());
+
+                        if free_content == "1" {
+                            // 读取PD验证文件内容
+                            let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
+
+                            if pd_content == "0" {
+                                info!("检测到PD验证状态被改为0，立即重新设置为1");
+                                pd_verifier.set_pd_verified(true)?;
+                            } else if pd_content == "1" {
+                                info!("PD验证状态正常为1，无需处理");
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        // 清理资源
+        unsafe {
+            libc::close(uevent_sock);
+            libc::close(epoll_fd);
         }
     }
 

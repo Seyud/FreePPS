@@ -11,7 +11,7 @@ mod utils;
 
 use anyhow::Result;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use constants::*;
@@ -41,7 +41,7 @@ fn monitor_free_file(
 
         // 主监控循环 - Unix版本
         let mut buffer = [0u8; 1024];
-        while running.load(Ordering::Relaxed) {
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
             let bytes_read = unsafe {
                 let count = buffer.len();
                 libc::read(
@@ -88,50 +88,13 @@ fn monitor_free_file(
 
     #[cfg(windows)]
     {
-        // Windows版本 - 使用轮询方式检查文件变化
-        let mut last_modified = std::fs::metadata(FREE_FILE)
-            .and_then(|m| m.modified())
-            .unwrap_or_else(|_| std::time::SystemTime::now());
-
-        while running.load(Ordering::Relaxed) {
-            thread::sleep(std::time::Duration::from_millis(1000));
-
-            let current_modified = std::fs::metadata(FREE_FILE)
-                .and_then(|m| m.modified())
-                .unwrap_or_else(|_| std::time::SystemTime::now());
-
-            if current_modified > last_modified {
-                info!("检测到free文件变化");
-                last_modified = current_modified;
-
-                let content = FileMonitor::read_file_content(FREE_FILE)?;
-                module_manager.handle_free_file_change(&content)?;
-
-                if content == "1" {
-                    info!("free文件为1，启动PD验证监控");
-
-                    // 立即设置PD验证状态为1
-                    if std::path::Path::new(PD_VERIFIED_PATH).exists() {
-                        if let Err(e) = pd_verifier.set_pd_verified(true) {
-                            error!("设置PD验证状态失败: {}", e);
-                        }
-                    } else {
-                        warn!("PD验证文件不存在，跳过设置");
-                    }
-
-                    // 立即设置PD适配器验证状态为1
-                    if std::path::Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-                        if let Err(e) = pd_adapter_verifier.set_pd_adapter_verified(true) {
-                            error!("设置PD适配器验证状态失败: {}", e);
-                        }
-                    } else {
-                        warn!("PD适配器验证文件不存在，跳过设置");
-                    }
-                }
-            }
-        }
+        // Windows版本 - 不支持轮询，直接返回错误
+        // 抑制未使用变量警告
+        let _ = (running, module_manager, pd_verifier, pd_adapter_verifier);
+        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
     }
 
+    #[cfg(unix)]
     Ok(())
 }
 
@@ -140,6 +103,7 @@ fn monitor_disable_file(running: Arc<AtomicBool>, module_manager: ModuleManager)
     let thread_name = utils::get_current_thread_name();
     info!("[{}] 启动disable文件监控线程...", thread_name);
 
+    #[cfg(unix)]
     let mut disable_exists = std::path::Path::new(DISABLE_FILE).exists();
 
     #[cfg(unix)]
@@ -149,7 +113,7 @@ fn monitor_disable_file(running: Arc<AtomicBool>, module_manager: ModuleManager)
 
         // 主监控循环 - Unix版本
         let mut buffer = [0u8; 1024];
-        while running.load(Ordering::Relaxed) {
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
             let bytes_read = unsafe {
                 let count = buffer.len();
                 libc::read(
@@ -178,20 +142,13 @@ fn monitor_disable_file(running: Arc<AtomicBool>, module_manager: ModuleManager)
 
     #[cfg(windows)]
     {
-        // Windows版本 - 使用轮询方式检查文件变化
-        while running.load(Ordering::Relaxed) {
-            thread::sleep(std::time::Duration::from_millis(1000));
-
-            let current_exists = std::path::Path::new(DISABLE_FILE).exists();
-
-            if current_exists != disable_exists {
-                info!("检测到disable文件变化");
-                module_manager.handle_disable_file_change(current_exists)?;
-                disable_exists = current_exists;
-            }
-        }
+        // Windows版本 - 不支持轮询，直接返回错误
+        // 抑制未使用变量警告
+        let _ = (running, module_manager);
+        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
     }
 
+    #[cfg(unix)]
     Ok(())
 }
 
@@ -242,7 +199,7 @@ fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Res
         );
 
         // 主监控循环 - epoll事件驱动
-        while running.load(Ordering::Relaxed) {
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
             let mut events: Vec<libc::epoll_event> =
                 vec![libc::epoll_event { events: 0, u64: 0 }; 10];
 
@@ -309,40 +266,13 @@ fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Res
 
     #[cfg(windows)]
     {
-        info!("[{}] 开始监控qcom状态: {}", thread_name, PD_VERIFIED_PATH);
-
-        // Windows版本 - 使用轮询方式检查文件变化
-        let mut last_pd_content =
-            FileMonitor::read_file_content(PD_VERIFIED_PATH).unwrap_or_else(|_| "1".to_string());
-
-        while running.load(Ordering::Relaxed) {
-            thread::sleep(std::time::Duration::from_millis(1000));
-
-            // 检查是否应该处理（free文件为1）
-            let free_content =
-                FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string());
-
-            if free_content == "1" {
-                // 检查PD验证文件内容
-                let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
-
-                // 只有当内容发生变化时才处理
-                if pd_content != last_pd_content {
-                    info!("检测到PD验证状态变化");
-
-                    if pd_content == "0" {
-                        info!("检测到PD验证状态被改为0，立即重新设置为1");
-                        pd_verifier.set_pd_verified(true)?;
-                        last_pd_content = "1".to_string();
-                    } else {
-                        info!("PD验证状态正常为1，无需处理");
-                        last_pd_content = pd_content;
-                    }
-                }
-            }
-        }
+        // Windows版本 - 不支持轮询，直接返回错误
+        // 抑制未使用变量警告
+        let _ = (running, pd_verifier);
+        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
     }
 
+    #[cfg(unix)]
     Ok(())
 }
 
@@ -396,7 +326,7 @@ fn monitor_pd_adapter_verified(
         );
 
         // 主监控循环 - epoll事件驱动
-        while running.load(Ordering::Relaxed) {
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
             let mut events: Vec<libc::epoll_event> =
                 vec![libc::epoll_event { events: 0, u64: 0 }; 10];
 
@@ -466,43 +396,13 @@ fn monitor_pd_adapter_verified(
 
     #[cfg(windows)]
     {
-        info!(
-            "[{}] 开始监控mtk状态: {}",
-            thread_name, PD_ADAPTER_VERIFIED_PATH
-        );
-
-        // Windows版本 - 使用轮询方式检查文件变化
-        let mut last_pd_adapter_content = FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)
-            .unwrap_or_else(|_| "1".to_string());
-
-        while running.load(Ordering::Relaxed) {
-            thread::sleep(std::time::Duration::from_millis(1000));
-
-            // 检查是否应该处理（free文件为1）
-            let free_content =
-                FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string());
-
-            if free_content == "1" {
-                // 检查PD适配器验证文件内容
-                let pd_adapter_content = FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)?;
-
-                // 只有当内容发生变化时才处理
-                if pd_adapter_content != last_pd_adapter_content {
-                    info!("检测到PD适配器验证状态变化");
-
-                    if pd_adapter_content == "0" {
-                        info!("检测到PD适配器验证状态被改为0，立即重新设置为1");
-                        pd_adapter_verifier.set_pd_adapter_verified(true)?;
-                        last_pd_adapter_content = "1".to_string();
-                    } else {
-                        info!("PD适配器验证状态正常为1，无需处理");
-                        last_pd_adapter_content = pd_adapter_content;
-                    }
-                }
-            }
-        }
+        // Windows版本 - 不支持轮询，直接返回错误
+        // 抑制未使用变量警告
+        let _ = (running, pd_adapter_verifier);
+        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
     }
 
+    #[cfg(unix)]
     Ok(())
 }
 

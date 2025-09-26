@@ -119,6 +119,7 @@ impl ModuleManager {
     }
 
     /// 处理free文件变化
+    #[cfg(unix)]
     pub fn handle_free_file_change(&self, content: &str) -> Result<()> {
         crate::info!("free文件内容: {}", content);
 
@@ -143,6 +144,7 @@ impl ModuleManager {
     }
 
     /// 处理disable文件变化
+    #[cfg(unix)]
     pub fn handle_disable_file_change(&self, exists: bool) -> Result<()> {
         if exists {
             crate::info!("检测到disable文件创建");

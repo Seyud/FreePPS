@@ -2,7 +2,7 @@
 use crate::MODULE_PROP;
 use crate::error::FreePPSError;
 use crate::monitor::file_monitor::FileMonitor;
-use crate::{DISABLE_FILE, FREE_FILE, PD_VERIFIED_PATH};
+use crate::{DISABLE_FILE, FREE_FILE, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -46,6 +46,15 @@ impl ModuleManager {
                 crate::info!("模块初始化时已设置PD验证状态为1");
             } else {
                 crate::warn!("PD验证文件不存在，跳过设置");
+            }
+
+            // 模块初始化时设置PD适配器验证为1
+            let pd_adapter_verifier = crate::monitor::PdAdapterVerifier::new()?;
+            if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+                pd_adapter_verifier.set_pd_adapter_verified(true)?;
+                crate::info!("模块初始化时已设置PD适配器验证状态为1");
+            } else {
+                crate::warn!("PD适配器验证文件不存在，跳过设置");
             }
         } else {
             crate::info!("模块暂停状态，更新描述");
@@ -105,6 +114,11 @@ impl ModuleManager {
             let pd_verifier = crate::monitor::PdVerifier::new()?;
             pd_verifier.set_pd_verified(false)?;
             crate::info!("已将PD验证状态恢复为0");
+
+            // 恢复PD适配器验证为0
+            let pd_adapter_verifier = crate::monitor::PdAdapterVerifier::new()?;
+            pd_adapter_verifier.set_pd_adapter_verified(false)?;
+            crate::info!("已将PD适配器验证状态恢复为0");
         }
         Ok(())
     }

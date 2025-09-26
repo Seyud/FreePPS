@@ -7,4 +7,4 @@ mod pd_verifier;
 
 pub use file_monitor::FileMonitor;
 pub use module_manager::ModuleManager;
-pub use pd_verifier::PdVerifier;
+pub use pd_verifier::{PdAdapterVerifier, PdVerifier};

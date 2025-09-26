@@ -20,4 +20,8 @@ wait_until_login() {
 
 wait_until_login
 
-nohup $MODDIR/bin/FreePPS &>/dev/null &
+if [ -f "$MODDIR/debug" ]; then
+    nohup $MODDIR/bin/FreePPS &> "$MODDIR/FreePPS.log" &
+else
+    nohup $MODDIR/bin/FreePPS &>/dev/null &
+fi

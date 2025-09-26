@@ -176,10 +176,10 @@ fn monitor_disable_file(running: Arc<AtomicBool>, module_manager: ModuleManager)
     Ok(())
 }
 
-/// 监控PD验证状态
+/// qcom监控线程
 fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
-    info!("[{}] 启动PD验证状态监控线程...", thread_name);
+    info!("[{}] 启动qcom监控线程...", thread_name);
 
     #[cfg(unix)]
     {
@@ -218,7 +218,7 @@ fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Res
         }
 
         info!(
-            "[{}] 开始通过uevent监控PD验证状态: {}",
+            "[{}] 开始通过uevent监控qcom状态: {}",
             thread_name, PD_VERIFIED_PATH
         );
 
@@ -290,7 +290,7 @@ fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Res
 
     #[cfg(windows)]
     {
-        info!("[{}] 开始监控PD验证状态: {}", thread_name, PD_VERIFIED_PATH);
+        info!("[{}] 开始监控qcom状态: {}", thread_name, PD_VERIFIED_PATH);
 
         // Windows版本 - 使用轮询方式检查文件变化
         let mut last_pd_content =
@@ -372,15 +372,15 @@ fn main() {
         })
         .expect("创建disable文件监控线程失败");
 
-    // 创建PD验证监控线程
+    // 创建qcom线程
     let mut pd_thread = thread::Builder::new()
-        .name("pd-verification-monitor".to_string())
+        .name("qcom".to_string())
         .spawn(move || {
             if let Err(e) = monitor_pd_verified(running_clone3, pd_verifier) {
-                error!("PD验证监控线程出错: {}", e);
+                error!("qcom线程出错: {}", e);
             }
         })
-        .expect("创建PD验证监控线程失败");
+        .expect("创建qcom线程失败");
 
     // 主线程无限循环，保持程序运行
     info!(
@@ -421,17 +421,17 @@ fn main() {
         }
 
         if pd_thread.is_finished() {
-            warn!("PD验证监控线程意外结束，正在重启...");
+            warn!("qcom线程意外结束，正在重启...");
             let running_clone = Arc::clone(&running);
             let pd_verifier = PdVerifier::new().expect("创建PD验证器失败");
             pd_thread = thread::Builder::new()
-                .name("pd-verification-monitor-restarted".to_string())
+                .name("qcom".to_string())
                 .spawn(move || {
                     if let Err(e) = monitor_pd_verified(running_clone, pd_verifier) {
-                        error!("重启的PD验证监控线程出错: {}", e);
+                        error!("重启的qcom线程出错: {}", e);
                     }
                 })
-                .expect("重启PD验证监控线程失败");
+                .expect("重启qcom线程失败");
         }
     }
 }

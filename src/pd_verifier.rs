@@ -1,4 +1,3 @@
-use crate::error::FreePPSError;
 use crate::info;
 use crate::monitor::file_monitor::FileMonitor;
 use crate::{PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
@@ -17,13 +16,10 @@ impl PdVerifier {
     pub fn set_pd_verified(&self, enable: bool) -> Result<()> {
         let value = if enable { "1" } else { "0" };
 
-        // 检查文件是否存在
+        // 检查文件是否存在，不存在时记录警告但不报错
         if !Path::new(PD_VERIFIED_PATH).exists() {
-            return Err(FreePPSError::PdVerificationFailed(format!(
-                "系统文件不存在: {}",
-                PD_VERIFIED_PATH
-            ))
-            .into());
+            crate::warn!("PD验证文件不存在，跳过设置: {}", PD_VERIFIED_PATH);
+            return Ok(());
         }
 
         // 写入值到系统文件
@@ -67,13 +63,13 @@ impl PdAdapterVerifier {
     pub fn set_pd_adapter_verified(&self, enable: bool) -> Result<()> {
         let value = if enable { "1" } else { "0" };
 
-        // 检查文件是否存在
+        // 检查文件是否存在，不存在时记录警告但不报错
         if !Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-            return Err(FreePPSError::PdVerificationFailed(format!(
-                "系统文件不存在: {}",
+            crate::warn!(
+                "PD适配器验证文件不存在，跳过设置: {}",
                 PD_ADAPTER_VERIFIED_PATH
-            ))
-            .into());
+            );
+            return Ok(());
         }
 
         // 写入值到系统文件

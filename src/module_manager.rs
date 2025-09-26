@@ -39,22 +39,39 @@ impl ModuleManager {
             crate::info!("模块启用状态，更新描述");
             self.update_module_description(true)?;
 
-            // 模块初始化时设置PD验证为1
-            let pd_verifier = crate::monitor::PdVerifier::new()?;
-            if Path::new(PD_VERIFIED_PATH).exists() {
-                pd_verifier.set_pd_verified(true)?;
-                crate::info!("模块初始化时已设置PD验证状态为1");
-            } else {
-                crate::warn!("PD验证文件不存在，跳过设置");
+            // 模块初始化时设置PD验证为1 - 添加错误处理
+            match crate::monitor::PdVerifier::new() {
+                Ok(pd_verifier) => {
+                    if Path::new(PD_VERIFIED_PATH).exists() {
+                        match pd_verifier.set_pd_verified(true) {
+                            Ok(_) => crate::info!("模块初始化时已设置PD验证状态为1"),
+                            Err(e) => {
+                                crate::warn!("模块初始化时设置PD验证状态失败: {}，跳过此步骤", e)
+                            }
+                        }
+                    } else {
+                        crate::warn!("PD验证文件不存在，跳过设置");
+                    }
+                }
+                Err(e) => crate::warn!("模块初始化时创建PD验证器失败: {}，跳过此步骤", e),
             }
 
-            // 模块初始化时设置PD适配器验证为1
-            let pd_adapter_verifier = crate::monitor::PdAdapterVerifier::new()?;
-            if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-                pd_adapter_verifier.set_pd_adapter_verified(true)?;
-                crate::info!("模块初始化时已设置PD适配器验证状态为1");
-            } else {
-                crate::warn!("PD适配器验证文件不存在，跳过设置");
+            // 模块初始化时设置PD适配器验证为1 - 添加错误处理
+            match crate::monitor::PdAdapterVerifier::new() {
+                Ok(pd_adapter_verifier) => {
+                    if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+                        match pd_adapter_verifier.set_pd_adapter_verified(true) {
+                            Ok(_) => crate::info!("模块初始化时已设置PD适配器验证状态为1"),
+                            Err(e) => crate::warn!(
+                                "模块初始化时设置PD适配器验证状态失败: {}，跳过此步骤",
+                                e
+                            ),
+                        }
+                    } else {
+                        crate::warn!("PD适配器验证文件不存在，跳过设置");
+                    }
+                }
+                Err(e) => crate::warn!("模块初始化时创建PD适配器验证器失败: {}，跳过此步骤", e),
             }
         } else {
             crate::info!("模块暂停状态，更新描述");
@@ -130,15 +147,25 @@ impl ModuleManager {
             crate::info!("free文件为0，暂停模块");
             self.update_module_description(false)?;
 
-            // 恢复PD验证为0
-            let pd_verifier = crate::monitor::PdVerifier::new()?;
-            pd_verifier.set_pd_verified(false)?;
-            crate::info!("已将PD验证状态恢复为0");
+            // 恢复PD验证为0 - 添加错误处理，不中断主流程
+            match crate::monitor::PdVerifier::new() {
+                Ok(pd_verifier) => match pd_verifier.set_pd_verified(false) {
+                    Ok(_) => crate::info!("已将PD验证状态恢复为0"),
+                    Err(e) => crate::warn!("设置PD验证状态失败: {}，跳过此步骤", e),
+                },
+                Err(e) => crate::warn!("创建PD验证器失败: {}，跳过此步骤", e),
+            }
 
-            // 恢复PD适配器验证为0
-            let pd_adapter_verifier = crate::monitor::PdAdapterVerifier::new()?;
-            pd_adapter_verifier.set_pd_adapter_verified(false)?;
-            crate::info!("已将PD适配器验证状态恢复为0");
+            // 恢复PD适配器验证为0 - 添加错误处理，不中断主流程
+            match crate::monitor::PdAdapterVerifier::new() {
+                Ok(pd_adapter_verifier) => {
+                    match pd_adapter_verifier.set_pd_adapter_verified(false) {
+                        Ok(_) => crate::info!("已将PD适配器验证状态恢复为0"),
+                        Err(e) => crate::warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
+                    }
+                }
+                Err(e) => crate::warn!("创建PD适配器验证器失败: {}，跳过此步骤", e),
+            }
         }
         Ok(())
     }

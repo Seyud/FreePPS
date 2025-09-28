@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "FreePPS"
-version = "1.1.0"
+version = "1.1.5"
 dependencies = [
  "anyhow",
  "libc",

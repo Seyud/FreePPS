@@ -1,7 +1,8 @@
 [package]
 name = "FreePPS"
-version = "1.1.0"
+version = "1.1.5"
 edition = "2024"
+authors = ["Seyud"]
 
 [dependencies]
 libc = "0.2"

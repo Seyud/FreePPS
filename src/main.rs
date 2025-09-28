@@ -72,6 +72,15 @@ fn monitor_free_file(
                     } else {
                         warn!("PD验证文件不存在，跳过设置");
                     }
+
+                    // 立即设置PD适配器验证状态为1
+                    if std::path::Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+                        if let Err(e) = _pd_adapter_verifier.set_pd_adapter_verified(true) {
+                            error!("设置PD适配器验证状态失败: {}", e);
+                        }
+                    } else {
+                        warn!("PD适配器验证文件不存在，跳过设置");
+                    }
                 }
             }
         }

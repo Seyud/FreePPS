@@ -50,7 +50,7 @@ def run_fmt_and_clippy():
     # 运行clippy检查
     print("运行 clippy 检查...")
     try:
-        subprocess.run(["cargo", "clippy", "--", "-D", "warnings"], check=True, cwd=project_root)
+        subprocess.run(["cargo", "clippy", "--target", "aarch64-linux-android", "--", "-D", "warnings"], check=True, cwd=project_root)
         print("clippy 检查通过")
     except subprocess.CalledProcessError as e:
         print(f"clippy检查失败: {e}")

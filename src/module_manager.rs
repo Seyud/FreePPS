@@ -135,15 +135,19 @@ impl ModuleManager {
                 crate::warn!("PD验证文件不存在，跳过恢复");
             }
 
-            // 恢复PD适配器验证为0 - 添加错误处理，不中断主流程
-            match crate::monitor::PdAdapterVerifier::new() {
-                Ok(pd_adapter_verifier) => {
-                    match pd_adapter_verifier.set_pd_adapter_verified(false) {
-                        Ok(_) => {}
-                        Err(e) => crate::warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
+            // 恢复PD适配器验证为0（仅当系统文件存在）
+            if Path::new(crate::PD_ADAPTER_VERIFIED_PATH).exists() {
+                match crate::monitor::PdAdapterVerifier::new() {
+                    Ok(pd_adapter_verifier) => {
+                        match pd_adapter_verifier.set_pd_adapter_verified(false) {
+                            Ok(_) => {}
+                            Err(e) => crate::warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
+                        }
                     }
+                    Err(e) => crate::warn!("创建PD适配器验证器失败: {}，跳过此步骤", e),
                 }
-                Err(e) => crate::warn!("创建PD适配器验证器失败: {}，跳过此步骤", e),
+            } else {
+                crate::warn!("PD适配器验证文件不存在，跳过恢复");
             }
         }
         Ok(())

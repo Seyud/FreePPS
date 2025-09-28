@@ -14,9 +14,6 @@ pub struct FileMonitor {
     pub inotify_fd: c_int,
     #[cfg(unix)]
     epoll_fd: c_int,
-    #[cfg(windows)]
-    #[allow(dead_code)]
-    pub dummy_fd: i32, // Windows环境下的占位符
 }
 
 impl FileMonitor {
@@ -46,13 +43,6 @@ impl FileMonitor {
             inotify_fd,
             epoll_fd,
         })
-    }
-
-    #[cfg(windows)]
-    #[allow(dead_code)]
-    pub fn new() -> Result<Self> {
-        // Windows环境下返回一个简单的实现
-        Ok(Self { dummy_fd: 0 })
     }
 
     /// 读取文件内容
@@ -157,14 +147,6 @@ impl FileMonitor {
             Ok(sock)
         }
     }
-
-    /// 添加文件监控（Windows版本）
-    #[cfg(windows)]
-    #[allow(dead_code)]
-    pub fn add_watch(&self, _path: &str, _mask: u32) -> Result<i32> {
-        // Windows环境下返回一个简单的实现
-        Ok(0)
-    }
 }
 
 impl Drop for FileMonitor {
@@ -187,11 +169,6 @@ impl Drop for FileMonitor {
                     close(self.epoll_fd);
                 }
             }
-        }
-
-        #[cfg(windows)]
-        {
-            // Windows环境下无需特殊清理
         }
     }
 }

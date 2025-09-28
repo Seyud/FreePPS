@@ -24,7 +24,7 @@ fn monitor_free_file(
     running: Arc<AtomicBool>,
     module_manager: ModuleManager,
     pd_verifier: PdVerifier,
-    pd_adapter_verifier: PdAdapterVerifier,
+    _pd_adapter_verifier: PdAdapterVerifier,
 ) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
     info!("[{}] 启动free文件监控线程...", thread_name);
@@ -72,26 +72,9 @@ fn monitor_free_file(
                     } else {
                         warn!("PD验证文件不存在，跳过设置");
                     }
-
-                    // 立即设置PD适配器验证状态为1
-                    if std::path::Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-                        if let Err(e) = pd_adapter_verifier.set_pd_adapter_verified(true) {
-                            error!("设置PD适配器验证状态失败: {}", e);
-                        }
-                    } else {
-                        warn!("PD适配器验证文件不存在，跳过设置");
-                    }
                 }
             }
         }
-    }
-
-    #[cfg(windows)]
-    {
-        // Windows版本 - 不支持轮询，直接返回错误
-        // 抑制未使用变量警告
-        let _ = (running, module_manager, pd_verifier, pd_adapter_verifier);
-        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
     }
 
     #[cfg(unix)]
@@ -138,14 +121,6 @@ fn monitor_disable_file(running: Arc<AtomicBool>, module_manager: ModuleManager)
                 }
             }
         }
-    }
-
-    #[cfg(windows)]
-    {
-        // Windows版本 - 不支持轮询，直接返回错误
-        // 抑制未使用变量警告
-        let _ = (running, module_manager);
-        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
     }
 
     #[cfg(unix)]
@@ -264,14 +239,6 @@ fn monitor_pd_verified(running: Arc<AtomicBool>, pd_verifier: PdVerifier) -> Res
         }
     }
 
-    #[cfg(windows)]
-    {
-        // Windows版本 - 不支持轮询，直接返回错误
-        // 抑制未使用变量警告
-        let _ = (running, pd_verifier);
-        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
-    }
-
     #[cfg(unix)]
     Ok(())
 }
@@ -324,6 +291,21 @@ fn monitor_pd_adapter_verified(
             "[{}] 开始通过uevent监控mtk状态: {}",
             thread_name, PD_ADAPTER_VERIFIED_PATH
         );
+
+        // 启动时进行一次初始同步：若free=1且节点值非1，则设置为1（由mtk线程负责）
+        let free_content =
+            FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string());
+        if free_content == "1"
+            && std::path::Path::new(PD_ADAPTER_VERIFIED_PATH).exists()
+            && let Ok(current) = FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)
+            && current != "1"
+        {
+            if let Err(e) = pd_adapter_verifier.set_pd_adapter_verified(true) {
+                error!("初始设置PD适配器验证状态失败: {}", e);
+            } else {
+                info!("已在mtk线程启动时将PD适配器验证状态置为1");
+            }
+        }
 
         // 主监控循环 - epoll事件驱动
         while running.load(std::sync::atomic::Ordering::Relaxed) {
@@ -394,14 +376,6 @@ fn monitor_pd_adapter_verified(
         }
     }
 
-    #[cfg(windows)]
-    {
-        // Windows版本 - 不支持轮询，直接返回错误
-        // 抑制未使用变量警告
-        let _ = (running, pd_adapter_verifier);
-        Err(anyhow::anyhow!("Windows平台不支持文件监控"))
-    }
-
     #[cfg(unix)]
     Ok(())
 }
@@ -412,8 +386,6 @@ fn main() {
 
     // 创建管理器实例
     let module_manager = ModuleManager::new().expect("创建模块管理器失败");
-    let pd_verifier = PdVerifier::new().expect("创建PD验证器失败");
-    let pd_adapter_verifier = PdAdapterVerifier::new().expect("创建PD适配器验证器失败");
 
     // 初始化阶段：确保基础文件存在并设置初始状态
     if let Err(e) = module_manager.initialize_module() {
@@ -424,8 +396,6 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone1 = Arc::clone(&running);
     let running_clone2 = Arc::clone(&running);
-    let running_clone3 = Arc::clone(&running);
-    let running_clone4 = Arc::clone(&running);
 
     let module_manager_clone1 = ModuleManager::new().expect("创建模块管理器失败");
     let module_manager_clone2 = ModuleManager::new().expect("创建模块管理器失败");
@@ -433,7 +403,7 @@ fn main() {
     let pd_adapter_verifier_clone = PdAdapterVerifier::new().expect("创建PD适配器验证器失败");
 
     // 创建free文件监控线程
-    let mut free_thread = thread::Builder::new()
+    let _free_thread = thread::Builder::new()
         .name("free-file-monitor".to_string())
         .spawn(move || {
             if let Err(e) = monitor_free_file(
@@ -448,7 +418,7 @@ fn main() {
         .expect("创建free文件监控线程失败");
 
     // 创建disable文件监控线程
-    let mut disable_thread = thread::Builder::new()
+    let _disable_thread = thread::Builder::new()
         .name("disable-file-monitor".to_string())
         .spawn(move || {
             if let Err(e) = monitor_disable_file(running_clone2, module_manager_clone2) {
@@ -457,97 +427,51 @@ fn main() {
         })
         .expect("创建disable文件监控线程失败");
 
-    // 创建qcom线程
-    let mut pd_thread = thread::Builder::new()
-        .name("qcom".to_string())
-        .spawn(move || {
-            if let Err(e) = monitor_pd_verified(running_clone3, pd_verifier) {
-                error!("qcom线程出错: {}", e);
-            }
-        })
-        .expect("创建qcom线程失败");
+    // 初始化时按节点存在性一次性创建 qcom/mtk 线程（不做后续轮询判断/重启）
+    if std::path::Path::new(PD_VERIFIED_PATH).exists() {
+        info!("检测到qcom节点存在，启动qcom线程: {}", PD_VERIFIED_PATH);
+        let running_clone = Arc::clone(&running);
+        let pd_verifier_local = PdVerifier::new().expect("创建PD验证器失败");
+        let _qcom_thread = thread::Builder::new()
+            .name("qcom".to_string())
+            .spawn(move || {
+                if let Err(e) = monitor_pd_verified(running_clone, pd_verifier_local) {
+                    error!("qcom线程出错: {}", e);
+                }
+            })
+            .expect("创建qcom线程失败");
+    } else {
+        info!("qcom节点不存在，跳过qcom线程启动: {}", PD_VERIFIED_PATH);
+    }
 
-    // 创建mtk线程
-    let mut pd_adapter_thread = thread::Builder::new()
-        .name("mtk".to_string())
-        .spawn(move || {
-            if let Err(e) = monitor_pd_adapter_verified(running_clone4, pd_adapter_verifier) {
-                error!("mtk线程出错: {}", e);
-            }
-        })
-        .expect("创建mtk线程失败");
+    if std::path::Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+        info!(
+            "检测到mtk节点存在，启动mtk线程: {}",
+            PD_ADAPTER_VERIFIED_PATH
+        );
+        let running_clone = Arc::clone(&running);
+        let pd_adapter_verifier_local = PdAdapterVerifier::new().expect("创建PD适配器验证器失败");
+        let _mtk_thread = thread::Builder::new()
+            .name("mtk".to_string())
+            .spawn(move || {
+                if let Err(e) =
+                    monitor_pd_adapter_verified(running_clone, pd_adapter_verifier_local)
+                {
+                    error!("mtk线程出错: {}", e);
+                }
+            })
+            .expect("创建mtk线程失败");
+    } else {
+        info!(
+            "mtk节点不存在，跳过mtk线程启动: {}",
+            PD_ADAPTER_VERIFIED_PATH
+        );
+    }
 
-    // 主线程无限循环，保持程序运行
     info!(
-        "[{}] 所有监控线程已启动，主线程进入守护模式...",
+        "[{}] 监控线程已按需启动（仅初始化判断一次），主线程park等待...",
         main_thread_name
     );
-    loop {
-        thread::sleep(std::time::Duration::from_secs(60));
-
-        // 检查线程是否仍在运行，如果线程panic则重启
-        if free_thread.is_finished() {
-            warn!("free文件监控线程意外结束，正在重启...");
-            let running_clone = Arc::clone(&running);
-            let module_manager = ModuleManager::new().expect("创建模块管理器失败");
-            let pd_verifier = PdVerifier::new().expect("创建PD验证器失败");
-            let pd_adapter_verifier = PdAdapterVerifier::new().expect("创建PD适配器验证器失败");
-            free_thread = thread::Builder::new()
-                .name("free-file-monitor-restarted".to_string())
-                .spawn(move || {
-                    if let Err(e) = monitor_free_file(
-                        running_clone,
-                        module_manager,
-                        pd_verifier,
-                        pd_adapter_verifier,
-                    ) {
-                        error!("重启的free文件监控线程出错: {}", e);
-                    }
-                })
-                .expect("重启free文件监控线程失败");
-        }
-
-        if disable_thread.is_finished() {
-            warn!("disable文件监控线程意外结束，正在重启...");
-            let running_clone = Arc::clone(&running);
-            let module_manager = ModuleManager::new().expect("创建模块管理器失败");
-            disable_thread = thread::Builder::new()
-                .name("disable-file-monitor-restarted".to_string())
-                .spawn(move || {
-                    if let Err(e) = monitor_disable_file(running_clone, module_manager) {
-                        error!("重启的disable文件监控线程出错: {}", e);
-                    }
-                })
-                .expect("重启disable文件监控线程失败");
-        }
-
-        if pd_thread.is_finished() {
-            warn!("qcom线程意外结束，正在重启...");
-            let running_clone = Arc::clone(&running);
-            let pd_verifier = PdVerifier::new().expect("创建PD验证器失败");
-            pd_thread = thread::Builder::new()
-                .name("qcom".to_string())
-                .spawn(move || {
-                    if let Err(e) = monitor_pd_verified(running_clone, pd_verifier) {
-                        error!("重启的qcom线程出错: {}", e);
-                    }
-                })
-                .expect("重启qcom线程失败");
-        }
-
-        if pd_adapter_thread.is_finished() {
-            warn!("mtk线程意外结束，正在重启...");
-            let running_clone = Arc::clone(&running);
-            let pd_adapter_verifier = PdAdapterVerifier::new().expect("创建PD适配器验证器失败");
-            pd_adapter_thread = thread::Builder::new()
-                .name("mtk".to_string())
-                .spawn(move || {
-                    if let Err(e) = monitor_pd_adapter_verified(running_clone, pd_adapter_verifier)
-                    {
-                        error!("重启的mtk线程出错: {}", e);
-                    }
-                })
-                .expect("重启mtk线程失败");
-        }
-    }
+    // 不再进行周期轮询，主线程保持常驻
+    std::thread::park();
 }

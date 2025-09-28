@@ -2,7 +2,7 @@
 use crate::MODULE_PROP;
 use crate::error::FreePPSError;
 use crate::monitor::file_monitor::FileMonitor;
-use crate::{DISABLE_FILE, FREE_FILE, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
+use crate::{DISABLE_FILE, FREE_FILE, PD_VERIFIED_PATH};
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -44,7 +44,7 @@ impl ModuleManager {
                 Ok(pd_verifier) => {
                     if Path::new(PD_VERIFIED_PATH).exists() {
                         match pd_verifier.set_pd_verified(true) {
-                            Ok(_) => crate::info!("模块初始化时已设置PD验证状态为1"),
+                            Ok(_) => {}
                             Err(e) => {
                                 crate::warn!("模块初始化时设置PD验证状态失败: {}，跳过此步骤", e)
                             }
@@ -54,24 +54,6 @@ impl ModuleManager {
                     }
                 }
                 Err(e) => crate::warn!("模块初始化时创建PD验证器失败: {}，跳过此步骤", e),
-            }
-
-            // 模块初始化时设置PD适配器验证为1 - 添加错误处理
-            match crate::monitor::PdAdapterVerifier::new() {
-                Ok(pd_adapter_verifier) => {
-                    if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-                        match pd_adapter_verifier.set_pd_adapter_verified(true) {
-                            Ok(_) => crate::info!("模块初始化时已设置PD适配器验证状态为1"),
-                            Err(e) => crate::warn!(
-                                "模块初始化时设置PD适配器验证状态失败: {}，跳过此步骤",
-                                e
-                            ),
-                        }
-                    } else {
-                        crate::warn!("PD适配器验证文件不存在，跳过设置");
-                    }
-                }
-                Err(e) => crate::warn!("模块初始化时创建PD适配器验证器失败: {}，跳过此步骤", e),
             }
         } else {
             crate::info!("模块暂停状态，更新描述");
@@ -128,13 +110,6 @@ impl ModuleManager {
         Ok(())
     }
 
-    /// 更新module.prop描述（Windows版本）
-    #[cfg(windows)]
-    pub fn update_module_description(&self, _enabled: bool) -> Result<()> {
-        // Windows环境下不执行任何操作
-        Ok(())
-    }
-
     /// 处理free文件变化
     #[cfg(unix)]
     pub fn handle_free_file_change(&self, content: &str) -> Result<()> {
@@ -147,20 +122,24 @@ impl ModuleManager {
             crate::info!("free文件为0，暂停模块");
             self.update_module_description(false)?;
 
-            // 恢复PD验证为0 - 添加错误处理，不中断主流程
-            match crate::monitor::PdVerifier::new() {
-                Ok(pd_verifier) => match pd_verifier.set_pd_verified(false) {
-                    Ok(_) => crate::info!("已将PD验证状态恢复为0"),
-                    Err(e) => crate::warn!("设置PD验证状态失败: {}，跳过此步骤", e),
-                },
-                Err(e) => crate::warn!("创建PD验证器失败: {}，跳过此步骤", e),
+            // 恢复PD验证为0（仅当系统文件存在）
+            if Path::new(PD_VERIFIED_PATH).exists() {
+                match crate::monitor::PdVerifier::new() {
+                    Ok(pd_verifier) => match pd_verifier.set_pd_verified(false) {
+                        Ok(_) => {}
+                        Err(e) => crate::warn!("设置PD验证状态失败: {}，跳过此步骤", e),
+                    },
+                    Err(e) => crate::warn!("创建PD验证器失败: {}，跳过此步骤", e),
+                }
+            } else {
+                crate::warn!("PD验证文件不存在，跳过恢复");
             }
 
             // 恢复PD适配器验证为0 - 添加错误处理，不中断主流程
             match crate::monitor::PdAdapterVerifier::new() {
                 Ok(pd_adapter_verifier) => {
                     match pd_adapter_verifier.set_pd_adapter_verified(false) {
-                        Ok(_) => crate::info!("已将PD适配器验证状态恢复为0"),
+                        Ok(_) => {}
                         Err(e) => crate::warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
                     }
                 }

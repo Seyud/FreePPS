@@ -1,7 +1,7 @@
 id=FreePPS
 name=FreePPS
-version=v1.1.1
-versionCode=20250929
+version=v1.1.5
+versionCode=20250930
 author=酷安@瓦力喀
-description=启用搭载澎湃 P1、P2 芯片机型的公版 PPS 支持。（感谢“酷安@低线阻狂魔”、“酷安@花橋桥”提供方案）
+description=启用米系设备的公版 PPS 支持。（感谢“酷安@低线阻狂魔”、“酷安@花橋桥”提供方案）
 updateJson=https://gitee.com/Seyud/FreePPS/raw/master/Update.json

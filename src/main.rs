@@ -352,8 +352,7 @@ fn monitor_pd_adapter_verified(
                     let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
 
                     // 检查是否与PD适配器验证相关
-                    if uevent_data.contains("usbpd_verifed")
-                        || uevent_data.contains("Charging_Adapter")
+                    if uevent_data.contains("usbpd_verifed") || uevent_data.contains("POWER_SUPPLY")
                     {
                         info!("检测到充电适配器相关uevent事件");
 

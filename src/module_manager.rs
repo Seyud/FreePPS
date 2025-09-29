@@ -2,7 +2,7 @@
 use crate::MODULE_PROP;
 use crate::error::FreePPSError;
 use crate::monitor::file_monitor::FileMonitor;
-use crate::{DISABLE_FILE, FREE_FILE, PD_VERIFIED_PATH};
+use crate::{DISABLE_FILE, FREE_FILE, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -54,6 +54,25 @@ impl ModuleManager {
                     }
                 }
                 Err(e) => crate::warn!("模块初始化时创建PD验证器失败: {}，跳过此步骤", e),
+            }
+
+            #[cfg(unix)]
+            {
+                match crate::monitor::PdAdapterVerifier::new() {
+                    Ok(pd_adapter_verifier) => {
+                        if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+                            if let Err(e) = pd_adapter_verifier.set_pd_adapter_verified(true) {
+                                crate::warn!(
+                                    "模块初始化时设置PD适配器验证状态失败: {}，跳过此步骤",
+                                    e
+                                );
+                            }
+                        } else {
+                            crate::warn!("PD适配器验证文件不存在，跳过设置");
+                        }
+                    }
+                    Err(e) => crate::warn!("模块初始化时创建PD适配器验证器失败: {}，跳过此步骤", e),
+                }
             }
         } else {
             crate::info!("模块暂停状态，更新描述");

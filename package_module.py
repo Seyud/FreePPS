@@ -4,6 +4,23 @@ import os
 import subprocess
 import sys
 import shutil
+import re
+
+def get_version_from_cargo_toml(cargo_toml_path):
+    """从 Cargo.toml 文件中提取版本号"""
+    try:
+        with open(cargo_toml_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            # 使用正则表达式匹配版本号
+            version_match = re.search(r'version\s*=\s*"([^"]+)"', content)
+            if version_match:
+                return version_match.group(1)
+            else:
+                print("警告：无法在 Cargo.toml 中找到版本号，将使用默认文件名 FreePPS.zip")
+                return ""
+    except Exception as e:
+        print(f"警告：读取 Cargo.toml 文件时出错: {e}，将使用默认文件名 FreePPS.zip")
+        return ""
 
 def package_module():
     """打包module文件夹为zip文件"""
@@ -11,6 +28,10 @@ def package_module():
     
     # 获取项目根目录
     project_root = os.path.dirname(os.path.abspath(__file__))
+    
+    # 获取版本号
+    cargo_toml_path = os.path.join(project_root, "Cargo.toml")
+    version = get_version_from_cargo_toml(cargo_toml_path)
     
     # 定义路径
     output_dir = os.path.join(project_root, "output")
@@ -44,12 +65,20 @@ def package_module():
     
     # 步骤2: 使用7-ZIP压缩整个module文件夹
     print("步骤2: 使用7-ZIP压缩module文件夹...")
-    zip_file_path = os.path.join(project_root, "FreePPS.zip")
+    # 根据版本号确定文件名
+    if version:
+        zip_filename = f"FreePPS_v{version}.zip"
+        print(f"检测到项目版本号: {version}")
+    else:
+        zip_filename = "FreePPS.zip"
+        print("未检测到项目版本号，使用默认文件名")
+    
+    zip_file_path = os.path.join(project_root, zip_filename)
     
     # 如果已存在zip文件，先删除
     if os.path.exists(zip_file_path):
         os.remove(zip_file_path)
-        print("已删除现有的FreePPS.zip文件")
+        print(f"已删除现有的{zip_filename}文件")
     
     # 使用7-ZIP压缩
     try:
@@ -85,7 +114,7 @@ def package_module():
     # 确保output文件夹存在
     os.makedirs(output_dir, exist_ok=True)
     
-    final_zip_path = os.path.join(output_dir, "FreePPS.zip")
+    final_zip_path = os.path.join(output_dir, zip_filename)
     
     # 如果output文件夹中已存在，先删除
     if os.path.exists(final_zip_path):

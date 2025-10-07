@@ -88,9 +88,9 @@ impl ModuleManager {
     pub fn update_module_description(&self, enabled: bool) -> Result<()> {
         let prop_content = FileMonitor::read_file_content(MODULE_PROP)?;
         let status_prefix = if enabled {
-            "[⚡✅PPS已支持] "
+            "[✅PPS已支持⚡] "
         } else {
-            "[⚡⏸️PPS已暂停] "
+            "[⏸️PPS已暂停💤] "
         };
 
         let updated_content = prop_content
@@ -100,14 +100,14 @@ impl ModuleManager {
                     // 提取原始描述文本
                     let original_description = line.strip_prefix("description=").unwrap_or("");
                     // 检查是否已经包含状态前缀，如果有则移除
-                    let clean_description = if original_description.starts_with("[⚡✅PPS已支持] ")
+                    let clean_description = if original_description.starts_with("[✅PPS已支持⚡] ")
                     {
                         original_description
-                            .strip_prefix("[⚡✅PPS已支持] ")
+                            .strip_prefix("[✅PPS已支持⚡] ")
                             .unwrap_or(original_description)
-                    } else if original_description.starts_with("[⚡⏸️PPS已暂停] ") {
+                    } else if original_description.starts_with("[⏸️PPS已暂停💤] ") {
                         original_description
-                            .strip_prefix("[⚡⏸️PPS已暂停] ")
+                            .strip_prefix("[⏸️PPS已暂停💤] ")
                             .unwrap_or(original_description)
                     } else {
                         original_description

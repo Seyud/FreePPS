@@ -1,4 +1,4 @@
-use crate::error::FreePPSError;
+use crate::common::FreePPSError;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;

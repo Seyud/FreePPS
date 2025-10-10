@@ -2,7 +2,7 @@
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {{
-        let timestamp = $crate::utils::get_timestamp();
+        let timestamp = $crate::common::utils::get_timestamp();
         println!("[{}] [INFO] {}", timestamp, format!($($arg)*));
     }};
 }
@@ -10,7 +10,7 @@ macro_rules! info {
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {{
-        let timestamp = $crate::utils::get_timestamp();
+        let timestamp = $crate::common::utils::get_timestamp();
         println!("[{}] [WARN] {}", timestamp, format!($($arg)*));
     }};
 }
@@ -18,7 +18,7 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {{
-        let timestamp = $crate::utils::get_timestamp();
+        let timestamp = $crate::common::utils::get_timestamp();
         eprintln!("[{}] [ERROR] {}", timestamp, format!($($arg)*));
     }};
 }
@@ -26,7 +26,7 @@ macro_rules! error {
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {{
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let timestamp = $crate::common::utils::get_timestamp();
         println!("[{}] [DEBUG] {}", timestamp, format!($($arg)*));
     }};
 }

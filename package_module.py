@@ -5,6 +5,7 @@ import subprocess
 import sys
 import shutil
 import re
+import glob
 
 def get_version_from_cargo_toml(cargo_toml_path):
     """从 Cargo.toml 文件中提取版本号"""
@@ -21,6 +22,51 @@ def get_version_from_cargo_toml(cargo_toml_path):
     except Exception as e:
         print(f"警告：读取 Cargo.toml 文件时出错: {e}，将使用默认文件名 FreePPS.zip")
         return ""
+
+def check_and_fix_shell_script_line_endings(module_dir):
+    """检查并自动修复module目录中所有shell脚本的换行符为LF"""
+    print("检查shell脚本换行符...")
+    
+    # 查找所有.sh文件
+    shell_scripts = []
+    for root, dirs, files in os.walk(module_dir):
+        for file in files:
+            if file.endswith('.sh'):
+                shell_scripts.append(os.path.join(root, file))
+    
+    if not shell_scripts:
+        print("✓ 未找到shell脚本文件")
+        return True
+    
+    print(f"找到 {len(shell_scripts)} 个shell脚本文件")
+    
+    fixed_count = 0
+    for script_path in shell_scripts:
+        try:
+            with open(script_path, 'rb') as f:
+                content = f.read()
+                
+            # 检查是否包含CRLF (\r\n)
+            if b'\r\n' in content:
+                print(f"✗ {os.path.relpath(script_path, module_dir)} - 使用CRLF换行符，正在修复...")
+                # 将CRLF替换为LF
+                fixed_content = content.replace(b'\r\n', b'\n')
+                with open(script_path, 'wb') as f:
+                    f.write(fixed_content)
+                print(f"  ✓ 已修复为LF换行符")
+                fixed_count += 1
+            else:
+                print(f"✓ {os.path.relpath(script_path, module_dir)} - 使用LF换行符")
+        except Exception as e:
+            print(f"错误：无法处理文件 {script_path}: {e}")
+            return False
+    
+    if fixed_count > 0:
+        print(f"\n✓ 已自动修复 {fixed_count} 个shell脚本的换行符")
+    else:
+        print(f"\n✓ 所有shell脚本都使用LF换行符")
+    
+    return True
 
 def package_module():
     """打包module文件夹为zip文件"""
@@ -63,8 +109,14 @@ def package_module():
     shutil.copy2(free_pps_path, target_path)
     print(f"✓ 已将FreePPS复制到: {target_path}")
     
-    # 步骤2: 使用7-ZIP压缩整个module文件夹
-    print("步骤2: 使用7-ZIP压缩module文件夹...")
+    # 步骤2: 检查并修复shell脚本换行符
+    print("\n步骤2: 检查并修复shell脚本换行符...")
+    if not check_and_fix_shell_script_line_endings(module_dir):
+        print("\n打包终止：修复shell脚本换行符失败")
+        sys.exit(1)
+    
+    # 步骤3: 使用7-ZIP压缩整个module文件夹
+    print("\n步骤3: 使用7-ZIP压缩module文件夹...")
     # 根据版本号确定文件名
     if version:
         zip_filename = f"FreePPS_v{version}.zip"
@@ -108,8 +160,8 @@ def package_module():
         print(f"压缩过程出错: {e}")
         sys.exit(1)
     
-    # 步骤3: 将压缩包移到output文件夹
-    print("步骤3: 将压缩包移到output文件夹...")
+    # 步骤4: 将压缩包移到output文件夹
+    print("\n步骤4: 将压缩包移到output文件夹...")
     
     # 确保output文件夹存在
     os.makedirs(output_dir, exist_ok=True)

@@ -142,6 +142,7 @@ fn run_unix(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()
                 let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
 
                 let is_pd_event = uevent_data.contains("pd_verifed");
+                let is_power_supply_event = uevent_data.contains("POWER_SUPPLY");
 
                 let fields = uevent_data.split(['\0', '\n']);
                 let status = fields
@@ -158,17 +159,19 @@ fn run_unix(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()
                     last_status = Some(current.to_string());
                 }
 
-                if is_pd_event || is_transition {
+                if is_pd_event || is_transition || is_power_supply_event {
                     if is_pd_event && is_transition {
-                        crate::info!(
+                        crate::debug!(
                             "检测到PD标记uevent，并伴随POWER_SUPPLY_STATUS从Charging跳变到Discharging"
                         );
                     } else if is_pd_event {
-                        crate::info!("检测到PD标记uevent事件");
-                    } else {
-                        crate::info!(
+                        crate::debug!("检测到PD标记uevent事件");
+                    } else if is_transition {
+                        crate::debug!(
                             "检测到POWER_SUPPLY_STATUS从Charging跳变到Discharging的电源状态事件"
                         );
+                    } else if is_power_supply_event {
+                        crate::debug!("检测到电源相关uevent事件");
                     }
 
                     let free_content = FileMonitor::read_file_content(FREE_FILE)
@@ -178,10 +181,10 @@ fn run_unix(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()
                         let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
 
                         if pd_content == "0" {
-                            crate::info!("检测到PD验证状态被改为0，立即重新设置为1");
+                            crate::info!("[qcom] 检测到PD验证状态被改为0，立即重新设置为1");
                             pd_verifier.set_pd_verified(true)?;
                         } else if pd_content == "1" {
-                            crate::info!("PD验证状态正常为1，无需处理");
+                            crate::debug!("[qcom] PD验证状态正常为1，无需处理");
                         }
                     }
                 }

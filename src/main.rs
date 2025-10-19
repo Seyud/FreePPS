@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
-use common::constants::{PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
+use common::constants::{FREE_FILE, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
 use common::utils;
 use monitoring::{
     ModuleManager, spawn_disable_file_monitor, spawn_free_file_monitor,
@@ -36,14 +36,18 @@ fn main() {
     let pd_verifier = Arc::new(PdVerifier::new().expect("创建PD验证器失败"));
     let pd_adapter_verifier = Arc::new(PdAdapterVerifier::new().expect("创建PD适配器验证器失败"));
 
+    let free_enabled = Arc::new(AtomicBool::new(
+        monitoring::FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string())
+            == "1",
+    ));
+
     let mut thread_handles: Vec<thread::JoinHandle<()>> = Vec::new();
 
     // 创建free文件监控线程
     thread_handles.push(spawn_free_file_monitor(
         Arc::clone(&running),
         Arc::clone(&module_manager),
-        Arc::clone(&pd_verifier),
-        Arc::clone(&pd_adapter_verifier),
+        Arc::clone(&free_enabled),
     ));
 
     // 创建disable文件监控线程
@@ -58,6 +62,7 @@ fn main() {
         thread_handles.push(spawn_pd_verified_monitor(
             Arc::clone(&running),
             Arc::clone(&pd_verifier),
+            Arc::clone(&free_enabled),
         ));
     } else {
         info!("qcom节点不存在，跳过qcom线程启动: {}", PD_VERIFIED_PATH);
@@ -71,6 +76,7 @@ fn main() {
         thread_handles.push(spawn_pd_adapter_verified_monitor(
             Arc::clone(&running),
             Arc::clone(&pd_adapter_verifier),
+            Arc::clone(&free_enabled),
         ));
     } else {
         info!(

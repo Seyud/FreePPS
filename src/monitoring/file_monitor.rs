@@ -6,6 +6,8 @@ use std::path::Path;
 #[cfg(unix)]
 use libc::c_int;
 #[cfg(unix)]
+use std::io;
+#[cfg(unix)]
 use std::os::raw::c_char;
 
 /// 文件监控器
@@ -108,6 +110,29 @@ impl FileMonitor {
         }
 
         Ok(wd)
+    }
+
+    /// 等待 epoll 事件
+    #[cfg(unix)]
+    pub fn wait_events(
+        &self,
+        events: &mut [libc::epoll_event],
+        timeout_ms: c_int,
+    ) -> io::Result<c_int> {
+        let nfds = unsafe {
+            libc::epoll_wait(
+                self.epoll_fd,
+                events.as_mut_ptr(),
+                events.len() as c_int,
+                timeout_ms,
+            )
+        };
+
+        if nfds == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(nfds)
+        }
     }
 
     /// 创建uevent监控

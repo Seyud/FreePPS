@@ -11,6 +11,8 @@ use crate::common::utils;
 use crate::monitoring::FileMonitor;
 use crate::monitoring::ModuleManager;
 #[cfg(unix)]
+use std::io;
+#[cfg(unix)]
 use std::path::Path;
 
 pub fn spawn_disable_file_monitor(
@@ -55,7 +57,24 @@ fn run_unix(
     file_monitor.add_watch(MODULE_BASE_PATH, IN_CREATE | IN_DELETE)?;
 
     let mut buffer = [0u8; 1024];
+    let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
     while running.load(std::sync::atomic::Ordering::Relaxed) {
+        let nfds = match file_monitor.wait_events(&mut events, -1) {
+            Ok(nfds) => nfds,
+            Err(err) => match err.raw_os_error() {
+                Some(code) if code == libc::EINTR || code == libc::EAGAIN => continue,
+                _ => {
+                    crate::error!("等待inotify事件失败，将在1秒后重试：{}", err);
+                    thread::sleep(std::time::Duration::from_millis(1000));
+                    continue;
+                }
+            },
+        };
+
+        if nfds <= 0 {
+            continue;
+        }
+
         let bytes_read = unsafe {
             let count = buffer.len();
             libc::read(
@@ -66,9 +85,15 @@ fn run_unix(
         };
 
         if bytes_read == -1 {
-            crate::error!("读取inotify事件失败，继续监控...");
-            thread::sleep(std::time::Duration::from_millis(1000));
-            continue;
+            let err = io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(code) if code == libc::EINTR || code == libc::EAGAIN => continue,
+                _ => {
+                    crate::error!("读取inotify事件失败({})，1秒后重试", err);
+                    thread::sleep(std::time::Duration::from_millis(1000));
+                    continue;
+                }
+            }
         } else if bytes_read > 0 {
             crate::info!("检测到目录变化事件");
 

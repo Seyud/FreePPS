@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 
 use anyhow::Result;
@@ -7,7 +8,7 @@ use anyhow::Result;
 #[cfg(unix)]
 use crate::common::FreePPSError;
 #[cfg(unix)]
-use crate::common::constants::{FREE_FILE, PD_VERIFIED_PATH};
+use crate::common::constants::PD_VERIFIED_PATH;
 use crate::common::utils;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
@@ -18,34 +19,43 @@ use std::io;
 pub fn spawn_pd_verified_monitor(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
+    free_enabled: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("qcom".to_string())
         .spawn(move || {
-            if let Err(e) = worker(running, pd_verifier) {
+            if let Err(e) = worker(running, pd_verifier, free_enabled) {
                 crate::error!("qcom线程出错: {}", e);
             }
         })
         .expect("创建qcom线程失败")
 }
 
-fn worker(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()> {
+fn worker(
+    running: Arc<AtomicBool>,
+    pd_verifier: Arc<PdVerifier>,
+    free_enabled: Arc<AtomicBool>,
+) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
     crate::info!("[{}] 启动qcom监控线程...", thread_name);
 
     #[cfg(unix)]
-    run_unix(running, pd_verifier)?;
+    run_unix(running, pd_verifier, free_enabled)?;
 
     #[cfg(not(unix))]
     {
-        let _ = (running, pd_verifier);
+        let _ = (running, pd_verifier, free_enabled);
     }
 
     Ok(())
 }
 
 #[cfg(unix)]
-fn run_unix(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()> {
+fn run_unix(
+    running: Arc<AtomicBool>,
+    pd_verifier: Arc<PdVerifier>,
+    free_enabled: Arc<AtomicBool>,
+) -> Result<()> {
     use std::os::raw::c_int;
 
     let uevent_sock = FileMonitor::create_uevent_monitor()?;
@@ -80,17 +90,41 @@ fn run_unix(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()
         PD_VERIFIED_PATH
     );
 
-    let mut last_status: Option<String> = None;
     let mut eintr_count: u64 = 0;
     let mut eagain_count: u64 = 0;
+    let mut last_status_log = false;
+    let mut charging_session_active = false;
     let mut last_interrupt_report = std::time::Instant::now();
     let interrupt_report_interval = std::time::Duration::from_secs(60 * 60 * 10);
+    let epoll_timeout_ms: c_int = -1;
 
     while running.load(std::sync::atomic::Ordering::Relaxed) {
+        let enabled = free_enabled.load(Ordering::Relaxed);
+
+        if !enabled {
+            if !last_status_log {
+                crate::info!("[qcom] free文件为0，暂停PD验证节点监控");
+                last_status_log = true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            continue;
+        }
+
+        if last_status_log {
+            crate::info!("[qcom] free文件恢复为1，重新启动PD验证节点监控");
+            last_status_log = false;
+        }
+
         let mut events: Vec<libc::epoll_event> = vec![libc::epoll_event { events: 0, u64: 0 }; 10];
 
-        let nfds =
-            unsafe { libc::epoll_wait(epoll_fd, events.as_mut_ptr(), events.len() as c_int, -1) };
+        let nfds = unsafe {
+            libc::epoll_wait(
+                epoll_fd,
+                events.as_mut_ptr(),
+                events.len() as c_int,
+                epoll_timeout_ms,
+            )
+        };
 
         if nfds == -1 {
             let err = io::Error::last_os_error();
@@ -141,52 +175,58 @@ fn run_unix(running: Arc<AtomicBool>, pd_verifier: Arc<PdVerifier>) -> Result<()
             if bytes_read > 0 {
                 let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
 
-                let is_pd_event = uevent_data.contains("pd_verifed");
-                let is_power_supply_event = uevent_data.contains("POWER_SUPPLY");
-
                 let fields = uevent_data.split(['\0', '\n']);
                 let status = fields
                     .clone()
                     .find(|field| field.starts_with("POWER_SUPPLY_STATUS="))
                     .and_then(|field| field.split_once('=').map(|(_, value)| value));
+                match status {
+                    Some("Charging") if !charging_session_active => {
+                        charging_session_active = true;
+                        crate::debug!("检测到POWER_SUPPLY_STATUS=Charging事件，开始监测PD验证节点");
 
-                let is_transition = matches!(
-                    (last_status.as_deref(), status),
-                    (Some("Charging"), Some("Discharging"))
-                );
+                        let start = std::time::Instant::now();
+                        let timeout = std::time::Duration::from_secs(3);
+                        let interval = std::time::Duration::from_millis(100);
+                        let mut detected_external_handshake = false;
 
-                if let Some(current) = status {
-                    last_status = Some(current.to_string());
-                }
+                        while start.elapsed() < timeout {
+                            let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
 
-                if is_pd_event || is_transition || is_power_supply_event {
-                    if is_pd_event && is_transition {
-                        crate::debug!(
-                            "检测到PD标记uevent，并伴随POWER_SUPPLY_STATUS从Charging跳变到Discharging"
-                        );
-                    } else if is_pd_event {
-                        crate::debug!("检测到PD标记uevent事件");
-                    } else if is_transition {
-                        crate::debug!(
-                            "检测到POWER_SUPPLY_STATUS从Charging跳变到Discharging的电源状态事件"
-                        );
-                    } else if is_power_supply_event {
-                        crate::debug!("检测到电源相关uevent事件");
-                    }
+                            if pd_content == "1" {
+                                detected_external_handshake = true;
+                                break;
+                            }
 
-                    let free_content = FileMonitor::read_file_content(FREE_FILE)
-                        .unwrap_or_else(|_| "0".to_string());
+                            std::thread::sleep(interval);
+                        }
 
-                    if free_content == "1" {
-                        let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
+                        if detected_external_handshake {
+                            crate::info!(
+                                "[qcom] {}秒内检测到节点已被置为1，判定为MIPPS握手",
+                                timeout.as_secs()
+                            );
+                        } else {
+                            let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
 
-                        if pd_content == "0" {
-                            crate::info!("[qcom] 检测到PD验证状态被改为0，立即重新设置为1");
-                            pd_verifier.set_pd_verified(true)?;
-                        } else if pd_content == "1" {
-                            crate::debug!("[qcom] PD验证状态正常为1，无需处理");
+                            if pd_content == "0" {
+                                crate::info!(
+                                    "[qcom] {}秒后节点仍为0，判定为PPS握手，设置节点为1",
+                                    timeout.as_secs()
+                                );
+                                pd_verifier.set_pd_verified(true)?;
+                            } else {
+                                crate::debug!(
+                                    "[qcom] {}秒后节点已为1，无需处理",
+                                    timeout.as_secs()
+                                );
+                            }
                         }
                     }
+                    Some("Discharging") => {
+                        charging_session_active = false;
+                    }
+                    _ => {}
                 }
             }
         }

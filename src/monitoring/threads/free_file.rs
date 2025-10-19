@@ -1,29 +1,28 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 
 use anyhow::Result;
 
 use crate::common::constants::FREE_FILE;
 #[cfg(unix)]
-use crate::common::constants::{
-    IN_CLOSE_WRITE, IN_MODIFY, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH,
-};
+use crate::common::constants::{IN_CLOSE_WRITE, IN_MODIFY};
 use crate::common::utils;
 use crate::monitoring::{FileMonitor, ModuleManager};
-use crate::pd::{PdAdapterVerifier, PdVerifier};
+#[cfg(unix)]
+use std::io;
 
 pub fn spawn_free_file_monitor(
     running: Arc<AtomicBool>,
     module_manager: Arc<ModuleManager>,
-    pd_verifier: Arc<PdVerifier>,
-    pd_adapter_verifier: Arc<PdAdapterVerifier>,
+    free_enabled: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("free-file-monitor".to_string())
         .spawn(move || {
-            if let Err(e) = worker(running, module_manager, pd_verifier, pd_adapter_verifier) {
+            if let Err(e) = worker(running, module_manager, free_enabled) {
                 crate::error!("free文件监控线程出错: {}", e);
             }
         })
@@ -33,8 +32,7 @@ pub fn spawn_free_file_monitor(
 fn worker(
     running: Arc<AtomicBool>,
     module_manager: Arc<ModuleManager>,
-    pd_verifier: Arc<PdVerifier>,
-    pd_adapter_verifier: Arc<PdAdapterVerifier>,
+    free_enabled: Arc<AtomicBool>,
 ) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
     crate::info!("[{}] 启动free文件监控线程...", thread_name);
@@ -43,14 +41,18 @@ fn worker(
         FileMonitor::write_file_content(FREE_FILE, "1")?;
     }
 
+    let initial =
+        FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string()) == "1";
+    free_enabled.store(initial, Ordering::Relaxed);
+
     #[cfg(unix)]
     {
-        run_unix(running, module_manager, pd_verifier, pd_adapter_verifier)?;
+        run_unix(running, module_manager, free_enabled)?;
     }
 
     #[cfg(not(unix))]
     {
-        let _ = (running, module_manager, pd_verifier, pd_adapter_verifier);
+        let _ = (running, module_manager, free_enabled);
     }
 
     Ok(())
@@ -60,14 +62,30 @@ fn worker(
 fn run_unix(
     running: Arc<AtomicBool>,
     module_manager: Arc<ModuleManager>,
-    pd_verifier: Arc<PdVerifier>,
-    pd_adapter_verifier: Arc<PdAdapterVerifier>,
+    free_enabled: Arc<AtomicBool>,
 ) -> Result<()> {
     let file_monitor = FileMonitor::new()?;
     file_monitor.add_watch(FREE_FILE, IN_MODIFY | IN_CLOSE_WRITE)?;
 
     let mut buffer = [0u8; 1024];
+    let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
     while running.load(std::sync::atomic::Ordering::Relaxed) {
+        let nfds = match file_monitor.wait_events(&mut events, -1) {
+            Ok(nfds) => nfds,
+            Err(err) => match err.raw_os_error() {
+                Some(code) if code == libc::EINTR || code == libc::EAGAIN => continue,
+                _ => {
+                    crate::error!("等待inotify事件失败，将在1秒后重试：{}", err);
+                    thread::sleep(std::time::Duration::from_millis(1000));
+                    continue;
+                }
+            },
+        };
+
+        if nfds <= 0 {
+            continue;
+        }
+
         let bytes_read = unsafe {
             let count = buffer.len();
             libc::read(
@@ -78,9 +96,15 @@ fn run_unix(
         };
 
         if bytes_read == -1 {
-            crate::error!("读取inotify事件失败，继续监控...");
-            thread::sleep(std::time::Duration::from_millis(1000));
-            continue;
+            let err = io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(code) if code == libc::EINTR || code == libc::EAGAIN => continue,
+                _ => {
+                    crate::error!("读取inotify事件失败({})，1秒后重试", err);
+                    thread::sleep(std::time::Duration::from_millis(1000));
+                    continue;
+                }
+            }
         } else if bytes_read > 0 {
             let bytes_read = bytes_read as usize;
             let event_size = std::mem::size_of::<libc::inotify_event>();
@@ -104,27 +128,9 @@ fn run_unix(
                 crate::info!("检测到free文件变化");
 
                 let content = FileMonitor::read_file_content(FREE_FILE)?;
+                let enabled = content == "1";
+                free_enabled.store(enabled, Ordering::Relaxed);
                 module_manager.handle_free_file_change(&content)?;
-
-                if content == "1" {
-                    crate::info!("free文件为1，启动PD验证监控");
-
-                    if Path::new(PD_VERIFIED_PATH).exists() {
-                        if let Err(e) = pd_verifier.set_pd_verified(true) {
-                            crate::error!("设置PD验证状态失败: {}", e);
-                        }
-                    } else {
-                        crate::warn!("PD验证文件不存在，跳过设置");
-                    }
-
-                    if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-                        if let Err(e) = pd_adapter_verifier.set_pd_adapter_verified(true) {
-                            crate::error!("设置PD适配器验证状态失败: {}", e);
-                        }
-                    } else {
-                        crate::warn!("PD适配器验证文件不存在，跳过设置");
-                    }
-                }
             }
         }
     }

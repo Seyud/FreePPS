@@ -12,6 +12,7 @@ pub const IN_DELETE: u32 = 0x00000200;
 #[cfg(unix)]
 pub const MODULE_BASE_PATH: &str = "/data/adb/modules/FreePPS";
 pub const FREE_FILE: &str = "/data/adb/modules/FreePPS/free";
+pub const AUTO_FILE: &str = "/data/adb/modules/FreePPS/auto";
 pub const DISABLE_FILE: &str = "/data/adb/modules/FreePPS/disable";
 #[cfg(unix)]
 pub const MODULE_PROP: &str = "/data/adb/modules/FreePPS/module.prop";

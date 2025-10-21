@@ -1,9 +1,8 @@
 use anyhow::Result;
+use log::{info, warn};
 
 #[cfg(unix)]
 use crate::common::constants::PD_ADAPTER_VERIFIED_PATH;
-#[cfg(unix)]
-use crate::info;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
 #[cfg(unix)]
@@ -24,7 +23,7 @@ impl PdAdapterVerifier {
 
         // 检查文件是否存在，不存在时记录警告但不报错
         if !Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-            crate::warn!(
+            warn!(
                 "PD适配器验证文件不存在，跳过设置: {}",
                 PD_ADAPTER_VERIFIED_PATH
             );

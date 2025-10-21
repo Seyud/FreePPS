@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use common::constants::{FREE_FILE, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
 use common::utils;
+use log::{error, info};
 use monitoring::{
     ModuleManager, spawn_disable_file_monitor, spawn_free_file_monitor,
     spawn_pd_adapter_verified_monitor, spawn_pd_verified_monitor,
@@ -18,6 +19,13 @@ use pd::{PdAdapterVerifier, PdVerifier};
 use platform::install_signal_handlers;
 
 fn main() {
+    // 初始化 Android Logger
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Debug)
+            .with_tag("FreePPS"),
+    );
+
     let main_thread_name = utils::get_current_thread_name();
     info!("[{}] 启动FreePPS", main_thread_name);
 

@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use anyhow::Result;
+use log::{error, info};
 
 #[cfg(unix)]
 use crate::common::constants::{DISABLE_FILE, IN_CREATE, IN_DELETE, MODULE_BASE_PATH};
@@ -23,7 +24,7 @@ pub fn spawn_disable_file_monitor(
         .name("disable-file-monitor".to_string())
         .spawn(move || {
             if let Err(e) = worker(running, module_manager) {
-                crate::error!("disable文件监控线程出错: {}", e);
+                error!("disable文件监控线程出错: {}", e);
             }
         })
         .expect("创建disable文件监控线程失败")
@@ -31,7 +32,7 @@ pub fn spawn_disable_file_monitor(
 
 fn worker(running: Arc<AtomicBool>, module_manager: Arc<ModuleManager>) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
-    crate::info!("[{}] 启动disable文件监控线程...", thread_name);
+    info!("[{}] 启动disable文件监控线程...", thread_name);
 
     #[cfg(unix)]
     {
@@ -56,6 +57,9 @@ fn run_unix(
     let file_monitor = FileMonitor::new()?;
     file_monitor.add_watch(MODULE_BASE_PATH, IN_CREATE | IN_DELETE)?;
 
+    // 将 inotify_fd 添加到 epoll
+    file_monitor.add_inotify_to_epoll()?;
+
     let mut buffer = [0u8; 1024];
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
     while running.load(std::sync::atomic::Ordering::Relaxed) {
@@ -64,7 +68,7 @@ fn run_unix(
             Err(err) => match err.raw_os_error() {
                 Some(code) if code == libc::EINTR || code == libc::EAGAIN => continue,
                 _ => {
-                    crate::error!("等待inotify事件失败，将在1秒后重试：{}", err);
+                    error!("等待inotify事件失败，将在1秒后重试：{}", err);
                     thread::sleep(std::time::Duration::from_millis(1000));
                     continue;
                 }
@@ -89,13 +93,13 @@ fn run_unix(
             match err.raw_os_error() {
                 Some(code) if code == libc::EINTR || code == libc::EAGAIN => continue,
                 _ => {
-                    crate::error!("读取inotify事件失败({})，1秒后重试", err);
+                    error!("读取inotify事件失败({})，1秒后重试", err);
                     thread::sleep(std::time::Duration::from_millis(1000));
                     continue;
                 }
             }
         } else if bytes_read > 0 {
-            crate::info!("检测到目录变化事件");
+            info!("检测到目录变化事件");
 
             let current_exists = Path::new(DISABLE_FILE).exists();
             if current_exists != *disable_exists {

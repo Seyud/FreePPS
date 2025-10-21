@@ -1,3 +1,4 @@
+use log::error;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -37,11 +38,11 @@ pub fn install_signal_handlers(running: &Arc<AtomicBool>) {
         action.sa_flags = libc::SA_RESTART;
 
         if libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut()) == -1 {
-            crate::error!("注册SIGINT处理器失败: {}", std::io::Error::last_os_error());
+            error!("注册SIGINT处理器失败: {}", std::io::Error::last_os_error());
         }
 
         if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) == -1 {
-            crate::error!("注册SIGTERM处理器失败: {}", std::io::Error::last_os_error());
+            error!("注册SIGTERM处理器失败: {}", std::io::Error::last_os_error());
         }
     }
 }

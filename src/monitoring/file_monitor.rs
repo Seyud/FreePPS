@@ -75,8 +75,6 @@ impl FileMonitor {
         // 外部函数声明（仅Unix）
         unsafe extern "C" {
             fn inotify_add_watch(fd: c_int, pathname: *const c_char, mask: u32) -> c_int;
-            fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut libc::epoll_event)
-            -> c_int;
         }
 
         let path_cstring = CString::new(path)
@@ -88,7 +86,17 @@ impl FileMonitor {
             return Err(FreePPSError::InotifyError(format!("无法监控文件: {}", path)).into());
         }
 
-        // 将inotify_fd添加到epoll中
+        Ok(wd)
+    }
+
+    /// 将 inotify_fd 添加到 epoll（只应在初始化时调用一次）
+    #[cfg(unix)]
+    pub fn add_inotify_to_epoll(&self) -> Result<()> {
+        unsafe extern "C" {
+            fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut libc::epoll_event)
+            -> c_int;
+        }
+
         let mut event = libc::epoll_event {
             events: libc::EPOLLIN as u32,
             u64: self.inotify_fd as u64,
@@ -104,12 +112,10 @@ impl FileMonitor {
         };
 
         if result == -1 {
-            return Err(
-                FreePPSError::InotifyError(format!("无法将inotify添加到epoll: {}", path)).into(),
-            );
+            return Err(FreePPSError::InotifyError("无法将inotify添加到epoll".to_string()).into());
         }
 
-        Ok(wd)
+        Ok(())
     }
 
     /// 等待 epoll 事件

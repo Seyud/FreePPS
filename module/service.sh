@@ -21,7 +21,10 @@ wait_until_login() {
 wait_until_login
 
 if [ -f "$MODDIR/debug" ]; then
-    nohup $MODDIR/bin/FreePPS &> "$MODDIR/FreePPS.log" &
+    nohup $MODDIR/bin/FreePPS >/dev/null 2>&1 &
+    FREEPPS_PID=$!
+    sleep 0.2
+    nohup nice -n 10 logcat -b main --pid=$FREEPPS_PID -s FreePPS:V > "$MODDIR/FreePPS.log" 2>&1 &
 else
-    nohup $MODDIR/bin/FreePPS &>/dev/null &
+    nohup $MODDIR/bin/FreePPS >/dev/null 2>&1 &
 fi

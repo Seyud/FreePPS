@@ -1,5 +1,7 @@
 # FreePPS 🔋⚡
 
+<img src="logo.png" style="width: 96px;" alt="logo">
+
 **让米系设备享受公版PPS快充支持！**
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/Seyud/FreePPS)](https://github.com/Seyud/FreePPS/releases/latest)

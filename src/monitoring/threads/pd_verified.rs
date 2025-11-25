@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 #[cfg(unix)]
 use crate::common::FreePPSError;
@@ -227,7 +227,7 @@ fn run_unix(
                             debug!("检测到POWER_SUPPLY_STATUS=Charging事件，开始监测PD验证节点");
 
                             let start = std::time::Instant::now();
-                            let timeout = std::time::Duration::from_millis(2700);
+                            let timeout = std::time::Duration::from_millis(3270);
                             let interval = std::time::Duration::from_millis(100);
                             let mut detected_external_handshake = false;
 
@@ -252,10 +252,47 @@ fn run_unix(
 
                                 if pd_content == "0" {
                                     info!(
-                                        "[qcom] {}秒后节点仍为0，判定为PPS握手，设置节点为1",
+                                        "[qcom] {}秒后节点仍为0，判定为PPS握手，执行断电握手流程",
                                         timeout.as_secs()
                                     );
+
+                                    // 1. 检查并写入input_suspend=1
+                                    let input_suspend_exists = std::path::Path::new(
+                                        crate::common::constants::INPUT_SUSPEND_PATH,
+                                    )
+                                    .exists();
+                                    if input_suspend_exists {
+                                        if let Err(e) = FileMonitor::write_file_content(
+                                            crate::common::constants::INPUT_SUSPEND_PATH,
+                                            "1",
+                                        ) {
+                                            error!("[qcom] 写入input_suspend=1失败: {}", e);
+                                        } else {
+                                            info!("[qcom] 已写入input_suspend=1");
+                                        }
+                                        // 延迟1秒
+                                        std::thread::sleep(std::time::Duration::from_secs(1));
+                                    } else {
+                                        warn!("[qcom] input_suspend节点不存在，跳过断电操作");
+                                    }
+
+                                    // 2. 设置pd_verified=1
                                     pd_verifier.set_pd_verified(true)?;
+
+                                    // 3. 检查并写入input_suspend=0
+                                    if input_suspend_exists {
+                                        // 延迟1秒
+                                        std::thread::sleep(std::time::Duration::from_secs(1));
+
+                                        if let Err(e) = FileMonitor::write_file_content(
+                                            crate::common::constants::INPUT_SUSPEND_PATH,
+                                            "0",
+                                        ) {
+                                            error!("[qcom] 写入input_suspend=0失败: {}", e);
+                                        } else {
+                                            info!("[qcom] 已写入input_suspend=0");
+                                        }
+                                    }
                                 } else {
                                     debug!("[qcom] {}秒后节点已为1，无需处理", timeout.as_secs());
                                 }

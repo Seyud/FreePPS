@@ -1,7 +1,7 @@
 id=FreePPS
 name=FreePPS
-version=v1.5.0-beta
-versionCode=20251020
-author=酷安@瓦力喀
+version=v1.5.0
+versionCode=20251130
+author=酷安@瓦力喀/GitHub@Seyud
 description=解锁并启用米系设备的公版 PPS 快充协议支持。（感谢“酷安@低线阻狂魔”、“酷安@花橋桥”提供方案）
 updateJson=https://gitee.com/Seyud/FreePPS/raw/master/Update.json

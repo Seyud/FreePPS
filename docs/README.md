@@ -7,6 +7,7 @@
 **让米系设备享受公版PPS快充支持！**
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/Seyud/FreePPS)](https://github.com/Seyud/FreePPS/releases/latest)
+[![GitHub Downloads](https://img.shields.io/github/downloads/Seyud/FreePPS/total?logo=github&logoColor=green)](https://github.com/Seyud/FreePPS/releases)
 [![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
 
 ## ✨ 模块简介

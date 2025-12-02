@@ -9,6 +9,7 @@
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/Seyud/FreePPS)](https://github.com/Seyud/FreePPS/releases/latest)
 [![GitHub Downloads](https://img.shields.io/github/downloads/Seyud/FreePPS/total?logo=github&logoColor=green)](https://github.com/Seyud/FreePPS/releases)
 [![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
+[![QQ群](https://img.shields.io/badge/QQ群-719872309-12B7F5?logo=qq&logoColor=white)](https://qun.qq.com/universal-share/share?ac=1&authKey=yGST4VNx53EILHT9hGSsCp31dMjknUn2Sk7YQpor07eDDzT24a1DtLnOmLqqlwgU&busi_data=eyJncm91cENvZGUiOiIxMDQwNDQ4NDgxIiwidG9rZW4iOiJHWHkyQ2E2TVMyZWU0WnNRU01UN2c2YjhuS0Vhb3Q3VERFZ0VTekxFVlorR3c4eVBYM2hDTXNuTjBRSm83T0FlIiwidWluIjoiMTEwNTc4MzAzMyJ9&data=qlkmodlW6ZB2dDVXRmbCMk_0FAgwp5Dw-UBtThSD5KUx4erJDe0cNBnEJnYqaFnGRLQ_asSN9AQOuG5Z6TxX0A&svctype=4&tempid=h5_group_info)
 
 ## ✨ 模块简介
 

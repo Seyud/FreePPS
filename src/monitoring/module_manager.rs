@@ -124,12 +124,9 @@ impl ModuleManager {
                     // 提取原始描述文本
                     let original_description = line.strip_prefix("description=").unwrap_or("");
                     // 检查是否已经包含状态前缀，如果有则移除
-                    let clean_description = if original_description.starts_with("[✅PPS已支持⚡] ")
+                    let clean_description = if original_description
+                        .starts_with("[✅固定PPS支持⚡] ")
                     {
-                        original_description
-                            .strip_prefix("[✅PPS已支持⚡] ")
-                            .unwrap_or(original_description)
-                    } else if original_description.starts_with("[✅固定PPS支持⚡] ") {
                         original_description
                             .strip_prefix("[✅固定PPS支持⚡] ")
                             .unwrap_or(original_description)

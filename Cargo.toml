@@ -8,7 +8,7 @@ authors = ["Seyud"]
 libc = "0.2.178"
 anyhow = "1.0.100"
 thiserror = "2.0.17"
-log = "0.4.28"
+log = "0.4.29"
 android_logger = "0.15.1"
 
 [profile.release]

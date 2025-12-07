@@ -184,23 +184,23 @@ fn run_unix(
                     .find(|field| field.starts_with("POWER_SUPPLY_STATUS="))
                     .and_then(|field| field.split_once('=').map(|(_, value)| value));
 
-                // 检查是否为固定PPS支持模式
+                // 检查是否为锁定PPS支持模式
                 let auto_exists = std::path::Path::new(AUTO_FILE).exists();
 
                 if !auto_exists {
-                    // 固定PPS支持模式
+                    // 锁定PPS支持模式
                     let mut should_set_node = false;
 
                     // 条件1: 检测到任何POWER_SUPPLY事件
                     if is_power_supply_event {
-                        debug!("[mtk] 固定PPS模式：检测到POWER_SUPPLY事件");
+                        debug!("[mtk] 锁定PPS模式：检测到POWER_SUPPLY事件");
                         should_set_node = true;
                     }
 
                     // 条件2: 检测到从Charging到Discharging的状态跳变
                     if let Some("Discharging") = status {
                         if charging_session_active {
-                            info!("[mtk] 固定PPS模式：检测到Charging→Discharging状态跳变");
+                            info!("[mtk] 锁定PPS模式：检测到Charging→Discharging状态跳变");
                             should_set_node = true;
                             charging_session_active = false;
                         }
@@ -215,7 +215,7 @@ fn run_unix(
                         let pd_adapter_content =
                             FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)?;
                         if pd_adapter_content == "0" {
-                            info!("[mtk] 固定PPS模式：设置节点为1");
+                            info!("[mtk] 锁定PPS模式：设置节点为1");
                             pd_adapter_verifier.set_pd_adapter_verified(true)?;
                         }
                     }

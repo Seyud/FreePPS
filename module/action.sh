@@ -19,7 +19,7 @@ fi
 if [ "$FREE_VALUE" = "0" ] && [ "$AUTO_EXISTS" = "0" ]; then
     # 状态1: free=0, 无auto → 状态2: free=1, 无auto
     printf "1" > "$FREE_FILE"
-    echo "固定PPS支持"
+    echo "锁定PPS支持"
 elif [ "$FREE_VALUE" = "1" ] && [ "$AUTO_EXISTS" = "0" ]; then
     # 状态2: free=1, 无auto → 状态3: free=1, 有auto
     touch "$AUTO_FILE"

@@ -48,10 +48,10 @@ impl ModuleManager {
         info!("当前free文件内容: {}", free_content);
 
         if free_content == "1" {
-            // 检查是否为固定PPS支持模式（没有auto文件）
+            // 检查是否为锁定PPS支持模式（没有auto文件）
             let auto_exists = Path::new(AUTO_FILE).exists();
             if !auto_exists {
-                info!("模块启用 - 固定PPS支持模式（无auto文件）");
+                info!("模块启用 - 锁定PPS支持模式（无auto文件）");
                 #[cfg(unix)]
                 self.update_module_description(true)?;
 
@@ -107,12 +107,12 @@ impl ModuleManager {
 
         // 三种状态:
         // 1. free=0, 无auto → 关闭PPS支持
-        // 2. free=1, 无auto → 固定PPS支持
+        // 2. free=1, 无auto → 锁定PPS支持
         // 3. free=1, 有auto → 开启协议自动识别
         let status_prefix = if !enabled {
             "[⏸️PPS已暂停💤] "
         } else if !auto_exists {
-            "[✅固定PPS支持⚡] "
+            "[✅锁定PPS支持⚡] "
         } else {
             "[🔄协议自动识别💡] "
         };
@@ -125,10 +125,10 @@ impl ModuleManager {
                     let original_description = line.strip_prefix("description=").unwrap_or("");
                     // 检查是否已经包含状态前缀，如果有则移除
                     let clean_description = if original_description
-                        .starts_with("[✅固定PPS支持⚡] ")
+                        .starts_with("[✅锁定PPS支持⚡] ")
                     {
                         original_description
-                            .strip_prefix("[✅固定PPS支持⚡] ")
+                            .strip_prefix("[✅锁定PPS支持⚡] ")
                             .unwrap_or(original_description)
                     } else if original_description.starts_with("[🔄协议自动识别💡] ") {
                         original_description
@@ -183,7 +183,7 @@ impl ModuleManager {
             if auto_exists {
                 info!("free文件为1，检测到auto文件，启用协议自动识别模式");
             } else {
-                info!("free文件为1，无auto文件，启用固定PPS支持模式");
+                info!("free文件为1，无auto文件，启用锁定PPS支持模式");
             }
             self.update_module_description(true)?;
         } else if content == "0" {

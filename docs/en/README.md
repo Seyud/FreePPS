@@ -6,9 +6,9 @@
 
 **Enable public PPS fast charging support for Xiaomi/Mi devices!**
 
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/Seyud/FreePPS)](https://github.com/Seyud/FreePPS/releases/latest)
+[![Version](https://img.shields.io/github/v/release/Seyud/FreePPS?logo=github)](https://github.com/Seyud/FreePPS/releases/latest)
 [![GitHub Downloads](https://img.shields.io/github/downloads/Seyud/FreePPS/total?logo=github&logoColor=green)](https://github.com/Seyud/FreePPS/releases)
-[![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
+[![Language](https://img.shields.io/badge/language-Rust-orange?logo=rust&logoColor=orange)](https://www.rust-lang.org/)
 
 ## ✨ Module Overview
 
@@ -16,7 +16,7 @@ FreePPS is a module specifically designed for Xiaomi/Mi devices that can **unloc
 
 > ⚠️ **Important Note**: After enabling public PPS support, the device will **automatically disable MIPPS (Xiaomi proprietary PPS protocol) support**. The two protocols conflict and cannot be enabled simultaneously. Please choose the appropriate protocol based on your charging device.
 
-> 💡 **Special Thanks**: Technical solution support provided by Coolapk @低线阻狂魔 and Coolapk @花橋桥
+> 💡 **Special Thanks**: Node provided by Coolapk @低线阻狂魔 and Coolapk @花橋桥
 
 ## 🚀 Key Features
 
@@ -28,7 +28,7 @@ FreePPS is a module specifically designed for Xiaomi/Mi devices that can **unloc
 
 ## 🙏 Acknowledgments
 
-- **Coolapk @低线阻狂魔**, **Coolapk @花橋桥** - Node solution support
+- **Coolapk @低线阻狂魔**, **Coolapk @花橋桥** - Node
 - **All test users** - Effective feedback and suggestions
 
 

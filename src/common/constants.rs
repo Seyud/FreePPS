@@ -19,3 +19,4 @@ pub const MODULE_PROP: &str = "/data/adb/modules/FreePPS/module.prop";
 pub const PD_VERIFIED_PATH: &str = "/sys/class/qcom-battery/pd_verifed";
 pub const PD_ADAPTER_VERIFIED_PATH: &str = "/sys/class/Charging_Adapter/pd_adapter/usbpd_verifed";
 pub const INPUT_SUSPEND_PATH: &str = "/sys/class/qcom-battery/input_suspend";
+pub const USB_TYPE_PATH: &str = "/sys/class/power_supply/usb/usb_type";

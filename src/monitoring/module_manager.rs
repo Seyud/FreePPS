@@ -86,6 +86,18 @@ impl ModuleManager {
                 info!("模块启用 - 协议自动识别模式（检测到auto文件）");
                 #[cfg(unix)]
                 self.update_module_description(true)?;
+
+                // 初始化时同样将qcom节点置为1，确保自动识别模式上来就生效
+                if Path::new(PD_VERIFIED_PATH).exists() {
+                    info!("初始化(自动识别)：设置qcom节点为1");
+                    match PdVerifier::new() {
+                        Ok(pd_verifier) => match pd_verifier.set_pd_verified(true) {
+                            Ok(_) => info!("qcom节点初始化成功"),
+                            Err(e) => warn!("设置qcom节点失败: {}", e),
+                        },
+                        Err(e) => warn!("创建PD验证器失败: {}", e),
+                    }
+                }
             }
         } else {
             info!("模块已暂停（free=0）");

@@ -2,7 +2,7 @@
 
 # FreePPS 🔋⚡
 
-<img src="logo.png" style="width: 96px; border-radius: 16px;" alt="logo">
+<img src="logo.png" style="width: 96px;" alt="logo">
 
 **让米系设备享受公版PPS快充支持！**
 

@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Seyud"]
 
 [dependencies]
-libc = "0.2.178"
+libc = "0.2.179"
 anyhow = "1.0.100"
 thiserror = "2.0.17"
 log = "0.4.29"

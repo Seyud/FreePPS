@@ -8,7 +8,7 @@ use log::{debug, error, info};
 #[cfg(unix)]
 use crate::common::FreePPSError;
 #[cfg(unix)]
-use crate::common::constants::{AUTO_FILE, PD_ADAPTER_VERIFIED_PATH};
+use crate::common::constants::PD_ADAPTER_VERIFIED_PATH;
 use crate::common::utils;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
@@ -184,92 +184,31 @@ fn run_unix(
                     .find(|field| field.starts_with("POWER_SUPPLY_STATUS="))
                     .and_then(|field| field.split_once('=').map(|(_, value)| value));
 
-                // 检查是否为锁定PPS支持模式
-                let auto_exists = std::path::Path::new(AUTO_FILE).exists();
+                let mut should_set_node = false;
 
-                if !auto_exists {
-                    // 锁定PPS支持模式
-                    let mut should_set_node = false;
+                if is_power_supply_event {
+                    debug!("[mtk] 锁定PPS模式：检测到POWER_SUPPLY事件");
+                    should_set_node = true;
+                }
 
-                    // 条件1: 检测到任何POWER_SUPPLY事件
-                    if is_power_supply_event {
-                        debug!("[mtk] 锁定PPS模式：检测到POWER_SUPPLY事件");
+                if let Some("Discharging") = status {
+                    if charging_session_active {
+                        info!("[mtk] 锁定PPS模式：检测到Charging→Discharging状态跳变");
                         should_set_node = true;
+                        charging_session_active = false;
                     }
+                } else if let Some("Charging") = status
+                    && !charging_session_active
+                {
+                    charging_session_active = true;
+                }
 
-                    // 条件2: 检测到从Charging到Discharging的状态跳变
-                    if let Some("Discharging") = status {
-                        if charging_session_active {
-                            info!("[mtk] 锁定PPS模式：检测到Charging→Discharging状态跳变");
-                            should_set_node = true;
-                            charging_session_active = false;
-                        }
-                    } else if let Some("Charging") = status
-                        && !charging_session_active
-                    {
-                        charging_session_active = true;
-                    }
-
-                    // 执行节点设置
-                    if should_set_node {
-                        let pd_adapter_content =
-                            FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)?;
-                        if pd_adapter_content == "0" {
-                            info!("[mtk] 锁定PPS模式：设置节点为1");
-                            pd_adapter_verifier.set_pd_adapter_verified(true)?;
-                        }
-                    }
-                } else {
-                    // 自动识别协议握手模式：保持原有逻辑
-                    match status {
-                        Some("Charging") if !charging_session_active => {
-                            charging_session_active = true;
-                            debug!(
-                                "检测到POWER_SUPPLY_STATUS=Charging事件，开始监测PD适配器验证节点"
-                            );
-
-                            let start = std::time::Instant::now();
-                            let timeout = std::time::Duration::from_millis(2700);
-                            let interval = std::time::Duration::from_millis(100);
-                            let mut detected_external_handshake = false;
-
-                            while start.elapsed() < timeout {
-                                let pd_adapter_content =
-                                    FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)?;
-
-                                if pd_adapter_content == "1" {
-                                    detected_external_handshake = true;
-                                    break;
-                                }
-
-                                std::thread::sleep(interval);
-                            }
-
-                            if detected_external_handshake {
-                                info!(
-                                    "[mtk] {}秒内检测到节点已被置为1，判定为MIPPS握手",
-                                    timeout.as_secs()
-                                );
-                            } else {
-                                let pd_adapter_content =
-                                    FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)?;
-
-                                if pd_adapter_content == "0" {
-                                    info!(
-                                        "[mtk] {}秒后节点仍为0，判定为PPS握手，设置节点为1",
-                                        timeout.as_secs()
-                                    );
-                                    pd_adapter_verifier.set_pd_adapter_verified(true)?;
-                                } else {
-                                    debug!("[mtk] {}秒后节点已为1，无需处理", timeout.as_secs());
-                                }
-                            }
-                        }
-                        Some("Discharging") if charging_session_active => {
-                            charging_session_active = false;
-                            debug!("[mtk] 检测到Discharging事件");
-                        }
-                        _ => {}
+                if should_set_node {
+                    let pd_adapter_content =
+                        FileMonitor::read_file_content(PD_ADAPTER_VERIFIED_PATH)?;
+                    if pd_adapter_content == "0" {
+                        info!("[mtk] 锁定PPS模式：设置节点为1");
+                        pd_adapter_verifier.set_pd_adapter_verified(true)?;
                     }
                 }
             }

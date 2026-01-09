@@ -3,14 +3,13 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use anyhow::Result;
-#[cfg(unix)]
-use log::{debug, warn};
+use log::debug;
 use log::{error, info};
 
 #[cfg(unix)]
 use crate::common::FreePPSError;
 #[cfg(unix)]
-use crate::common::constants::{AUTO_FILE, PD_VERIFIED_PATH, USB_TYPE_PATH};
+use crate::common::constants::PD_VERIFIED_PATH;
 use crate::common::utils;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
@@ -96,11 +95,9 @@ fn run_unix(
     let mut eagain_count: u64 = 0;
     let mut last_status_log = false;
     let mut charging_session_active = false;
-    let mut mipps_session_handled = false; // 标记当前充电会话是否已处理MIPPS逻辑，避免重复断充
     let mut last_interrupt_report = std::time::Instant::now();
     let interrupt_report_interval = std::time::Duration::from_secs(60 * 60 * 10);
     let epoll_timeout_ms: c_int = -1;
-    let mut ignore_charging_until: Option<std::time::Instant> = None; // MIPPS断充后的Charging屏蔽窗口
 
     while running.load(std::sync::atomic::Ordering::Relaxed) {
         let enabled = free_enabled.load(std::sync::atomic::Ordering::Relaxed);
@@ -189,166 +186,30 @@ fn run_unix(
                     .find(|field| field.starts_with("POWER_SUPPLY_STATUS="))
                     .and_then(|field| field.split_once('=').map(|(_, value)| value));
 
-                // 检查是否为锁定PPS支持模式
-                let auto_exists = std::path::Path::new(AUTO_FILE).exists();
+                let mut should_set_node = false;
 
-                if !auto_exists {
-                    // 锁定PPS支持模式
-                    let mut should_set_node = false;
+                if is_power_supply_event {
+                    debug!("[qcom] 锁定PPS模式：检测到POWER_SUPPLY事件");
+                    should_set_node = true;
+                }
 
-                    // 条件1: 检测到任何POWER_SUPPLY事件
-                    if is_power_supply_event {
-                        debug!("[qcom] 锁定PPS模式：检测到POWER_SUPPLY事件");
+                if let Some("Discharging") = status {
+                    if charging_session_active {
+                        info!("[qcom] 锁定PPS模式：检测到Charging→Discharging状态跳变");
                         should_set_node = true;
+                        charging_session_active = false;
                     }
+                } else if let Some("Charging") = status
+                    && !charging_session_active
+                {
+                    charging_session_active = true;
+                }
 
-                    // 条件2: 检测到从Charging到Discharging的状态跳变
-                    if let Some("Discharging") = status {
-                        if charging_session_active {
-                            info!("[qcom] 锁定PPS模式：检测到Charging→Discharging状态跳变");
-                            should_set_node = true;
-                            charging_session_active = false;
-                        }
-                    } else if let Some("Charging") = status
-                        && !charging_session_active
-                    {
-                        charging_session_active = true;
-                    }
-
-                    // 执行节点设置
-                    if should_set_node {
-                        let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
-                        if pd_content == "0" {
-                            info!("[qcom] 锁定PPS模式：设置节点为1");
-                            pd_verifier.set_pd_verified(true)?;
-                        }
-                    }
-                } else {
-                    // 自动识别协议握手模式：新的实现逻辑
-
-                    // 如果屏蔽窗口已过期，恢复检测
-                    if ignore_charging_until.is_some()
-                        && std::time::Instant::now()
-                            >= ignore_charging_until.expect("ignore_charging_until checked")
-                    {
-                        ignore_charging_until = None;
-                    }
-                    let charging_event_blocked = ignore_charging_until.is_some();
-
-                    // 首先，保持pd验证节点为1（类似锁定PPS支持模式）
-                    // 已处理MIPPS的会话中跳过，屏蔽窗口期间也跳过
-                    if is_power_supply_event && !mipps_session_handled && !charging_event_blocked {
-                        let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
-                        if pd_content == "0" {
-                            debug!("[qcom] 自动模式：保持pd验证节点为1");
-                            pd_verifier.set_pd_verified(true)?;
-                        }
-                    }
-
-                    // 检测从Discharging到Charging的跳变
-                    match status {
-                        Some("Charging") if !charging_session_active && !charging_event_blocked => {
-                            charging_session_active = true;
-                            info!(
-                                "[qcom] 自动模式：检测到Discharging→Charging状态跳变，开始等待3.27秒"
-                            );
-
-                            // 如果本次充电会话已经处理过MIPPS，跳过重复检测
-                            if mipps_session_handled {
-                                debug!("[qcom] 本次会话已处理MIPPS，跳过重复检测");
-                                continue;
-                            }
-
-                            // 等待3.27秒
-                            std::thread::sleep(std::time::Duration::from_millis(3270));
-
-                            // 读取usb_type节点内容
-                            let usb_type_content = FileMonitor::read_file_content(USB_TYPE_PATH)
-                                .unwrap_or_else(|e| {
-                                    warn!("[qcom] 读取usb_type节点失败: {}", e);
-                                    String::new()
-                                });
-
-                            info!("[qcom] 读取到usb_type内容: {}", usb_type_content);
-
-                            // 判断是MIPPS还是PPS
-                            // MIPPS特征: [PD] PD_DRP PD_PPS（中括号在PD而不是PD_PPS）
-                            // PPS特征: [PD_PPS]（中括号在PD_PPS）
-                            if usb_type_content.contains("[PD]")
-                                && usb_type_content.contains("PD_PPS")
-                            {
-                                // 判定为MIPPS，执行断充流程
-                                info!("[qcom] 判定为MIPPS协议，执行断充流程");
-
-                                // 标记当前会话已处理MIPPS，后续Charging事件直接跳过
-                                mipps_session_handled = true;
-
-                                // 设置屏蔽窗口，防止断充恢复期间的Charging事件触发重复流程
-                                // 覆盖：断充(写1) + 1秒等待 + pd_verified清零 + 1秒等待 + 恢复(写0) + 缓冲
-                                ignore_charging_until = Some(
-                                    std::time::Instant::now()
-                                        + std::time::Duration::from_millis(5000),
-                                );
-
-                                // 1. 检查并写入input_suspend=1
-                                let input_suspend_exists = std::path::Path::new(
-                                    crate::common::constants::INPUT_SUSPEND_PATH,
-                                )
-                                .exists();
-                                if input_suspend_exists {
-                                    if let Err(e) = FileMonitor::write_file_content(
-                                        crate::common::constants::INPUT_SUSPEND_PATH,
-                                        "1",
-                                    ) {
-                                        error!("[qcom] 写入input_suspend=1失败: {}", e);
-                                    } else {
-                                        info!("[qcom] 已写入input_suspend=1（断充）");
-                                    }
-                                } else {
-                                    warn!("[qcom] input_suspend节点不存在，跳过断充操作");
-                                }
-
-                                // 2. 延迟1秒
-                                std::thread::sleep(std::time::Duration::from_secs(1));
-
-                                // 3. 将pd验证节点清零
-                                if let Err(e) = pd_verifier.set_pd_verified(false) {
-                                    error!("[qcom] 写入pd_verified=0失败: {}", e);
-                                } else {
-                                    info!("[qcom] 已写入pd_verified=0");
-                                }
-
-                                // 4. 再延迟1秒
-                                std::thread::sleep(std::time::Duration::from_secs(1));
-
-                                // 5. 检查并写入input_suspend=0
-                                if input_suspend_exists {
-                                    if let Err(e) = FileMonitor::write_file_content(
-                                        crate::common::constants::INPUT_SUSPEND_PATH,
-                                        "0",
-                                    ) {
-                                        error!("[qcom] 写入input_suspend=0失败: {}", e);
-                                    } else {
-                                        info!("[qcom] 已写入input_suspend=0（恢复充电）");
-                                    }
-                                }
-                                charging_session_active = false;
-                            } else if usb_type_content.contains("[PD_PPS]") {
-                                // 判定为PPS，不做多余处理
-                                info!("[qcom] 判定为PPS协议，保持pd验证节点为1");
-                            } else {
-                                warn!(
-                                    "[qcom] usb_type内容不匹配MIPPS或PPS特征: {}",
-                                    usb_type_content
-                                );
-                            }
-                        }
-                        Some("Discharging") if charging_session_active => {
-                            charging_session_active = false;
-                            mipps_session_handled = false; // 断开充电后允许下一次会话重新判断
-                            debug!("[qcom] 检测到Discharging事件");
-                        }
-                        _ => {}
+                if should_set_node {
+                    let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
+                    if pd_content == "0" {
+                        info!("[qcom] 锁定PPS模式：设置节点为1");
+                        pd_verifier.set_pd_verified(true)?;
                     }
                 }
             }

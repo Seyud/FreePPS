@@ -9,7 +9,9 @@ use log::{error, info};
 
 use crate::common::constants::FREE_FILE;
 #[cfg(unix)]
-use crate::common::constants::{AUTO_FILE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_MODIFY};
+use crate::common::constants::IN_CLOSE_WRITE;
+#[cfg(unix)]
+use crate::common::constants::IN_MODIFY;
 use crate::common::utils;
 use crate::monitoring::{FileMonitor, ModuleManager};
 #[cfg(unix)]
@@ -70,11 +72,6 @@ fn run_unix(
     // 先添加所有需要监控的路径
     file_monitor.add_watch(FREE_FILE, IN_MODIFY | IN_CLOSE_WRITE)?;
 
-    // 监控模块目录以捕获auto文件的创建和删除
-    let module_dir = Path::new(FREE_FILE).parent().unwrap();
-    file_monitor.add_watch(module_dir.to_str().unwrap(), IN_CREATE | IN_DELETE)?;
-
-    // 然后将 inotify_fd 添加到 epoll（只调用一次）
     file_monitor.add_inotify_to_epoll()?;
 
     let mut buffer = [0u8; 1024];
@@ -120,7 +117,6 @@ fn run_unix(
             let event_size = std::mem::size_of::<libc::inotify_event>();
             let mut offset = 0usize;
             let mut should_process_free = false;
-            let mut should_process_auto = false;
 
             while offset + event_size <= bytes_read {
                 let event_ptr =
@@ -132,38 +128,12 @@ fn run_unix(
                     should_process_free = true;
                 }
 
-                // 检查是否是auto文件的创建或删除事件
-                if (event.mask & (libc::IN_CREATE | libc::IN_DELETE)) != 0 {
-                    let name_len = event.len as usize;
-                    if name_len > 0 {
-                        let name_ptr = unsafe { buffer.as_ptr().add(offset + event_size) };
-                        let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
-                        if let Ok(name) = std::str::from_utf8(name_bytes) {
-                            let name = name.trim_end_matches('\0');
-                            // 提取auto文件名（从完整路径中获取）
-                            let auto_filename = Path::new(AUTO_FILE)
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("auto");
-                            if name == auto_filename {
-                                should_process_auto = true;
-                            }
-                        }
-                    }
-                }
-
                 let name_len = event.len as usize;
                 offset += event_size + name_len;
             }
 
-            // 只要检测到 free 文件或 auto 文件的变化，都重新读取并更新状态
-            if should_process_free || should_process_auto {
-                if should_process_free {
-                    info!("检测到free文件变化");
-                }
-                if should_process_auto {
-                    info!("检测到auto文件创建/删除");
-                }
+            if should_process_free {
+                info!("检测到free文件变化");
 
                 // 延迟100ms以便：
                 // 1. 让文件系统操作完全完成
@@ -212,7 +182,7 @@ fn run_unix(
                 let enabled = content == "1";
                 free_enabled.store(enabled, Ordering::Relaxed);
 
-                // 更新模块描述（这会同时检查 free 和 auto 文件的状态）
+                // 更新模块描述
                 module_manager.handle_free_file_change(&content)?;
             }
         }

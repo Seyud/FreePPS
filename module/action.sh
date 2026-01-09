@@ -11,10 +11,10 @@ fi
 
 if [ "$FREE_VALUE" = "0" ]; then
     printf "1" > "$FREE_FILE"
-    echo "锁定PPS支持"
+    echo "✅锁定PPS支持⚡"
 else
     printf "0" > "$FREE_FILE"
-    echo "关闭PPS支持"
+    echo "⏸️PPS已暂停💤"
 fi
 
 sleep 0.3

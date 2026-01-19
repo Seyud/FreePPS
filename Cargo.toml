@@ -7,7 +7,7 @@ authors = ["Seyud"]
 [dependencies]
 libc = "0.2.180"
 anyhow = "1.0.100"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 log = "0.4.29"
 android_logger = "0.15.1"
 

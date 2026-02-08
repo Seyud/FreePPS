@@ -22,7 +22,6 @@ FreePPS is a module specifically designed for Xiaomi/Mi devices that can **unloc
 
 - ✅ **PPS Protocol Unlock** - Enable public PPS fast charging support
 - 🔄 **Two-state Toggle** - On/Off switching through module operation buttons
-- 🔌 **Power-off Handshake** - Implement power-off handshake process to improve PPS fast charging protocol compatibility
 - 🔛 **Temporary Control** - Use module switches for compatibility switching of PPS support status
 
 ## 🙏 Acknowledgments

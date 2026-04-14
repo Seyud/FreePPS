@@ -9,6 +9,7 @@
 [![Version](https://img.shields.io/github/v/release/Seyud/FreePPS?logo=github)](https://github.com/Seyud/FreePPS/releases/latest)
 [![GitHub Downloads](https://img.shields.io/github/downloads/Seyud/FreePPS/total?logo=github&logoColor=green)](https://github.com/Seyud/FreePPS/releases)
 [![Language](https://img.shields.io/badge/language-Rust-orange?logo=rust&logoColor=orange)](https://www.rust-lang.org/)
+[![Telegram](https://img.shields.io/badge/Telegram-Group-2AABEE?logo=telegram&logoColor=white)](https://t.me/HyperChargePPS)
 
 ## ✨ Module Overview
 

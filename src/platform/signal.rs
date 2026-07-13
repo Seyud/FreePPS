@@ -33,7 +33,7 @@ pub fn install_signal_handlers(running: &Arc<AtomicBool>) {
 
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = termination_signal_handler as usize;
+        action.sa_sigaction = termination_signal_handler as *const () as usize;
         libc::sigemptyset(&mut action.sa_mask);
         action.sa_flags = libc::SA_RESTART;
 

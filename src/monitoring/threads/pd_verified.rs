@@ -176,9 +176,6 @@ fn run_unix(
             if bytes_read > 0 {
                 let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
 
-                // 检查是否为POWER_SUPPLY事件
-                let is_power_supply_event = uevent_data.contains("POWER_SUPPLY");
-
                 // 提取POWER_SUPPLY_STATUS
                 let fields = uevent_data.split(['\0', '\n']);
                 let status = fields
@@ -188,14 +185,16 @@ fn run_unix(
 
                 let mut should_set_node = false;
 
-                if is_power_supply_event {
-                    debug!("[qcom] 锁定PPS模式：检测到POWER_SUPPLY事件");
-                    should_set_node = true;
-                }
-
+                // 充电过程中不强制写入pd_verifed：
+                // - 小米原装充电头：内核通过verify_process自行管理pd_verifed
+                //   （verify结束后内核自己设pd_verifed=1），反复写入会干扰MIPPS握手
+                // - 公版PPS充电头：内核不碰pd_verifed，依赖启动时设置的值
+                // 仅在拔出(Discharging)时设置pd_verifed=1，为下次插电准备
                 if let Some("Discharging") = status {
                     if charging_session_active {
-                        info!("[qcom] 锁定PPS模式：检测到Charging→Discharging状态跳变");
+                        info!(
+                            "[qcom] 检测到Charging→Discharging状态跳变，设置pd_verifed=1为下次插电准备"
+                        );
                         should_set_node = true;
                         charging_session_active = false;
                     }
@@ -203,12 +202,13 @@ fn run_unix(
                     && !charging_session_active
                 {
                     charging_session_active = true;
+                    debug!("[qcom] 检测到充电会话开始");
                 }
 
                 if should_set_node {
                     let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
                     if pd_content == "0" {
-                        info!("[qcom] 锁定PPS模式：设置节点为1");
+                        info!("[qcom] 设置pd_verifed=1");
                         pd_verifier.set_pd_verified(true)?;
                     }
                 }

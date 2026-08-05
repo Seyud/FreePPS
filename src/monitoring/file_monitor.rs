@@ -89,33 +89,33 @@ impl FileMonitor {
         Ok(wd)
     }
 
-    /// 将 inotify_fd 添加到 epoll（只应在初始化时调用一次）
+    /// 将任意 fd 添加到 epoll（只应在初始化时调用一次）
     #[cfg(unix)]
-    pub fn add_inotify_to_epoll(&self) -> Result<()> {
+    pub fn add_fd_to_epoll(&self, fd: c_int, events: u32, data: u64) -> Result<()> {
         unsafe extern "C" {
             fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut libc::epoll_event)
             -> c_int;
         }
 
-        let mut event = libc::epoll_event {
-            events: libc::EPOLLIN as u32,
-            u64: self.inotify_fd as u64,
-        };
+        let mut event = libc::epoll_event { events, u64: data };
 
-        let result = unsafe {
-            epoll_ctl(
-                self.epoll_fd,
-                libc::EPOLL_CTL_ADD,
-                self.inotify_fd,
-                &mut event,
-            )
-        };
+        let result = unsafe { epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut event) };
 
         if result == -1 {
-            return Err(FreePPSError::InotifyError("无法将inotify添加到epoll".to_string()).into());
+            return Err(FreePPSError::InotifyError("无法将fd添加到epoll".to_string()).into());
         }
 
         Ok(())
+    }
+
+    /// 将 inotify_fd 添加到 epoll（只应在初始化时调用一次）
+    #[cfg(unix)]
+    pub fn add_inotify_to_epoll(&self) -> Result<()> {
+        self.add_fd_to_epoll(
+            self.inotify_fd,
+            libc::EPOLLIN as u32,
+            self.inotify_fd as u64,
+        )
     }
 
     /// 等待 epoll 事件

@@ -15,7 +15,7 @@
 
 FreePPS is a module specifically designed for Xiaomi/Mi devices that can **unlock and enable public PPS (Programmable Power Supply) fast charging protocol support**, giving your device better compatibility!
 
-> ⚠️ **Important Note**: After enabling public PPS support, the device will **automatically disable MIPPS (Xiaomi proprietary PPS protocol) support**. The two protocols conflict and cannot be enabled simultaneously. Please choose the appropriate protocol based on your charging device.
+> ⚠️ **Important Note**: After enabling public PPS support, some devices will **automatically disable MIPPS (Xiaomi proprietary PPS protocol) support**, the two protocols conflict and cannot be enabled simultaneously. Please choose the appropriate protocol based on your charging device.
 
 > 💡 **Special Thanks**: Node provided by Coolapk @低线阻狂魔 and Coolapk @花橋桥
 

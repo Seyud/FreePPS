@@ -1,5 +1,7 @@
 use crate::common::FreePPSError;
 #[cfg(unix)]
+use crate::common::constants::BATTERY_STATUS_PATH;
+#[cfg(unix)]
 use crate::common::constants::MODULE_PROP;
 #[cfg(unix)]
 use crate::common::constants::PD_ADAPTER_VERIFIED_PATH;
@@ -82,6 +84,8 @@ impl ModuleManager {
             info!("模块已暂停（free=0）");
             #[cfg(unix)]
             self.update_module_description(false)?;
+            #[cfg(unix)]
+            self.restore_pd_when_idle();
         }
 
         info!("模块初始化完成");
@@ -132,6 +136,47 @@ impl ModuleManager {
         Ok(())
     }
 
+    /// free=0 且未插电时，将pd节点还原为0，确保下次插电前为0、不误解锁高功率PPS；
+    /// 已插电(充电中)则不动pd，让内核/MIPPS自然握手，避免写入0干扰协议协商
+    #[cfg(unix)]
+    fn restore_pd_when_idle(&self) {
+        let battery_status =
+            FileMonitor::read_file_content(BATTERY_STATUS_PATH).unwrap_or_default();
+        if battery_status != "Discharging" {
+            info!(
+                "当前电池状态={}，free=0不动pd，交由内核/MIPPS自然握手",
+                battery_status
+            );
+            return;
+        }
+
+        if Path::new(PD_VERIFIED_PATH).exists() {
+            match PdVerifier::new() {
+                Ok(pd_verifier) => match pd_verifier.set_pd_verified(false) {
+                    Ok(_) => {}
+                    Err(e) => warn!("设置PD验证状态失败: {}，跳过此步骤", e),
+                },
+                Err(e) => warn!("创建PD验证器失败: {}，跳过此步骤", e),
+            }
+        } else {
+            warn!("PD验证文件不存在，跳过恢复");
+        }
+
+        if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+            match PdAdapterVerifier::new() {
+                Ok(pd_adapter_verifier) => {
+                    match pd_adapter_verifier.set_pd_adapter_verified(false) {
+                        Ok(_) => {}
+                        Err(e) => warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
+                    }
+                }
+                Err(e) => warn!("创建PD适配器验证器失败: {}，跳过此步骤", e),
+            }
+        } else {
+            warn!("PD适配器验证文件不存在，跳过恢复");
+        }
+    }
+
     /// 处理free文件变化
     #[cfg(unix)]
     pub fn handle_free_file_change(&self, content: &str) -> Result<()> {
@@ -153,37 +198,37 @@ impl ModuleManager {
         if content == "1" {
             info!("free文件为1，启用锁定PPS支持模式");
             self.update_module_description(true)?;
-        } else if content == "0" {
-            info!("free文件为0，暂停模块");
-            self.update_module_description(false)?;
 
-            // 恢复PD验证为0（仅当系统文件存在）
+            // free=1 时设置pd_verifed=1（与initialize_module一致），解锁高功率PPS；
+            // 否则free置1后pd保持旧值，下次插电可能无法解锁
             if Path::new(PD_VERIFIED_PATH).exists() {
                 match PdVerifier::new() {
-                    Ok(pd_verifier) => match pd_verifier.set_pd_verified(false) {
+                    Ok(pd_verifier) => match pd_verifier.set_pd_verified(true) {
                         Ok(_) => {}
                         Err(e) => warn!("设置PD验证状态失败: {}，跳过此步骤", e),
                     },
                     Err(e) => warn!("创建PD验证器失败: {}，跳过此步骤", e),
                 }
-            } else {
-                warn!("PD验证文件不存在，跳过恢复");
             }
-
-            // 恢复PD适配器验证为0（仅当系统文件存在）
-            if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
-                match PdAdapterVerifier::new() {
-                    Ok(pd_adapter_verifier) => {
-                        match pd_adapter_verifier.set_pd_adapter_verified(false) {
-                            Ok(_) => {}
-                            Err(e) => warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
+            #[cfg(unix)]
+            {
+                if Path::new(PD_ADAPTER_VERIFIED_PATH).exists() {
+                    match PdAdapterVerifier::new() {
+                        Ok(pd_adapter_verifier) => {
+                            match pd_adapter_verifier.set_pd_adapter_verified(true) {
+                                Ok(_) => {}
+                                Err(e) => warn!("设置PD适配器验证状态失败: {}，跳过此步骤", e),
+                            }
                         }
+                        Err(e) => warn!("创建PD适配器验证器失败: {}，跳过此步骤", e),
                     }
-                    Err(e) => warn!("创建PD适配器验证器失败: {}，跳过此步骤", e),
                 }
-            } else {
-                warn!("PD适配器验证文件不存在，跳过恢复");
             }
+        } else if content == "0" {
+            info!("free文件为0，暂停模块");
+            self.update_module_description(false)?;
+            // free=0 时：未插电还原pd为0，已插电不动pd（交由内核/MIPPS自然握手）
+            self.restore_pd_when_idle();
         }
         Ok(())
     }

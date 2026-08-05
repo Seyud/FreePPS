@@ -108,6 +108,24 @@ impl FileMonitor {
         Ok(())
     }
 
+    /// 将任意 fd 从 epoll 中移除（free=0 暂停时移除 uevent socket，避免无关唤醒）
+    #[cfg(unix)]
+    pub fn remove_fd_from_epoll(&self, fd: c_int) -> Result<()> {
+        unsafe extern "C" {
+            fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut libc::epoll_event)
+            -> c_int;
+        }
+
+        let result =
+            unsafe { epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+
+        if result == -1 {
+            return Err(FreePPSError::InotifyError("无法将fd从epoll移除".to_string()).into());
+        }
+
+        Ok(())
+    }
+
     /// 将 inotify_fd 添加到 epoll（只应在初始化时调用一次）
     #[cfg(unix)]
     pub fn add_inotify_to_epoll(&self) -> Result<()> {

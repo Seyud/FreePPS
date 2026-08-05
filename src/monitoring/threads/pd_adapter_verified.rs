@@ -82,6 +82,10 @@ fn run_unix(
     // 之后由 inotify 唤醒时直接读 free 文件作为权威状态。
     // （free_file.rs 更新共享原子前有约100ms延迟，若依赖原子可能漏掉 0↔1 切换）
     let mut enabled = free_enabled.load(Ordering::Relaxed);
+    if !enabled {
+        // 启动即暂停：从 epoll 移除 uevent socket，暂停期间仅由 free 文件 inotify 唤醒
+        file_monitor.remove_fd_from_epoll(uevent_sock)?;
+    }
 
     let mut eintr_count: u64 = 0;
     let mut eagain_count: u64 = 0;
@@ -172,8 +176,16 @@ fn run_unix(
                     let new_enabled = FileMonitor::read_file_content(FREE_FILE)? == "1";
                     if new_enabled != enabled {
                         if new_enabled {
+                            // 恢复：把 uevent socket 重新加入 epoll
+                            file_monitor.add_fd_to_epoll(
+                                uevent_sock,
+                                (libc::EPOLLIN | libc::EPOLLPRI) as u32,
+                                uevent_sock as u64,
+                            )?;
                             info!("[mtk] free文件恢复为1，重新启动PD适配器验证节点监控");
                         } else {
+                            // 暂停：从 epoll 移除 uevent socket，暂停期间不再被 uevent 唤醒
+                            file_monitor.remove_fd_from_epoll(uevent_sock)?;
                             info!("[mtk] free文件为0，暂停PD适配器验证节点监控");
                         }
                         enabled = new_enabled;
@@ -182,9 +194,10 @@ fn run_unix(
             }
         }
 
-        // 消费 uevent（free=0 时也读取，避免 socket 未读导致 epoll 忙等），仅 free=1 时处理
+        // free=0 时 uevent socket 已从 epoll 移除，不会因 uevent 被唤醒；
+        // 同一批事件中残留的 uevent 事件在暂停态直接跳过，不读取
         for ev in events.iter().take(nfds as usize) {
-            if ev.u64 != uevent_sock as u64 {
+            if ev.u64 != uevent_sock as u64 || !enabled {
                 continue;
             }
 
@@ -198,7 +211,7 @@ fn run_unix(
                 )
             };
 
-            if bytes_read <= 0 || !enabled {
+            if bytes_read <= 0 {
                 continue;
             }
 

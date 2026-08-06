@@ -18,3 +18,13 @@ pub const MODULE_PROP: &str = "/data/adb/modules/FreePPS/module.prop";
 pub const PD_VERIFIED_PATH: &str = "/sys/class/qcom-battery/pd_verifed";
 pub const PD_ADAPTER_VERIFIED_PATH: &str = "/sys/class/Charging_Adapter/pd_adapter/usbpd_verifed";
 pub const BATTERY_STATUS_PATH: &str = "/sys/class/power_supply/battery/status";
+
+// 金标动画广播伪造相关 sysfs 节点
+#[cfg(unix)]
+pub const REAL_TYPE_PATH: &str = "/sys/class/xm_power/charger/charger_common/real_type";
+#[cfg(unix)]
+pub const APDO_MAX_PATH: &str = "/sys/class/xm_power/typec/apdo_max";
+#[cfg(unix)]
+pub const ADAPTER_SVID_PATH: &str = "/sys/class/xm_power/typec/strategy_pd_auth/adapter_svid";
+#[cfg(unix)]
+pub const USB_VOLTAGE_NOW_PATH: &str = "/sys/class/power_supply/usb/voltage_now";

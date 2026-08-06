@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::atomic::AtomicU32;
 use std::thread;
 
 use anyhow::Result;
@@ -7,11 +9,17 @@ use log::debug;
 use log::{error, info};
 
 #[cfg(unix)]
-use crate::common::constants::{FREE_FILE, IN_CLOSE_WRITE, IN_MODIFY, PD_VERIFIED_PATH};
+use crate::common::constants::{
+    BATTERY_STATUS_PATH, FREE_FILE, IN_CLOSE_WRITE, IN_MODIFY, PD_VERIFIED_PATH,
+};
 use crate::common::utils;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
 use crate::pd::PdVerifier;
+#[cfg(unix)]
+use crate::pd::{BroadcastForger, spawn_broadcast_forger_worker};
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 
 pub fn spawn_pd_verified_monitor(
     running: Arc<AtomicBool>,
@@ -53,8 +61,6 @@ fn run_unix(
     pd_verifier: Arc<PdVerifier>,
     free_enabled: Arc<AtomicBool>,
 ) -> Result<()> {
-    use std::sync::atomic::Ordering;
-
     // 每线程独立创建 inotify（监控 free 文件），与 uevent 共用同一 epoll：
     // free=0 时也无限阻塞在 epoll_wait，由 free 文件 inotify 事件唤醒，实现零周期唤醒
     let file_monitor = FileMonitor::new()?;
@@ -88,9 +94,27 @@ fn run_unix(
         file_monitor.remove_fd_from_epoll(uevent_sock)?;
     }
 
+    // 金标动画广播伪造：会话状态由本线程（qcom）驱动，broadcast-forger 线程负责发送
+    let session_gen = Arc::new(AtomicU32::new(0));
+    let session_active = Arc::new(AtomicBool::new(false));
+    let broadcast_forger = Arc::new(BroadcastForger);
+    spawn_broadcast_forger_worker(
+        Arc::clone(&running),
+        Arc::clone(&session_gen),
+        Arc::clone(&session_active),
+        Arc::clone(&broadcast_forger),
+    );
+
     let mut eintr_count: u64 = 0;
     let mut eagain_count: u64 = 0;
     let mut charging_session_active = false;
+    // 启动时若已处于充电状态（如开机前已插电）：初始化充电会话并触发金标动画广播伪造
+    if enabled
+        && FileMonitor::read_file_content(BATTERY_STATUS_PATH).unwrap_or_default() == "Charging"
+    {
+        start_charging_session(&mut charging_session_active, &session_gen, &session_active);
+        info!("[qcom] 启动时已处于充电状态，初始化充电会话并触发金标动画广播伪造");
+    }
     let mut last_interrupt_report = std::time::Instant::now();
     let interrupt_report_interval = std::time::Duration::from_secs(60 * 60 * 10);
 
@@ -184,6 +208,19 @@ fn run_unix(
                                 uevent_sock as u64,
                             )?;
                             info!("[qcom] free文件恢复为1，重新启动PD验证节点监控");
+                            // 恢复时若已处于充电状态（free=0期间未跟踪会话），补触发金标动画广播伪造
+                            if !charging_session_active
+                                && FileMonitor::read_file_content(BATTERY_STATUS_PATH)
+                                    .unwrap_or_default()
+                                    == "Charging"
+                            {
+                                start_charging_session(
+                                    &mut charging_session_active,
+                                    &session_gen,
+                                    &session_active,
+                                );
+                                info!("[qcom] free恢复时已处于充电状态，触发金标动画广播伪造");
+                            }
                         } else {
                             // 暂停：从 epoll 移除 uevent socket，暂停期间不再被 uevent 唤醒
                             file_monitor.remove_fd_from_epoll(uevent_sock)?;
@@ -238,12 +275,12 @@ fn run_unix(
                         "[qcom] 检测到Charging→Discharging状态跳变，设置pd_verifed=1为下次插电准备"
                     );
                     should_set_node = true;
-                    charging_session_active = false;
+                    stop_charging_session(&mut charging_session_active, &session_active);
                 }
             } else if let Some("Charging") = status
                 && !charging_session_active
             {
-                charging_session_active = true;
+                start_charging_session(&mut charging_session_active, &session_gen, &session_active);
                 debug!("[qcom] 检测到充电会话开始");
             }
 
@@ -269,4 +306,25 @@ fn run_unix(
     }
 
     Ok(())
+}
+
+/// 开始一次充电会话并触发金标动画广播伪造（幂等：已在会话中时不重复触发）
+#[cfg(unix)]
+fn start_charging_session(
+    charging_session_active: &mut bool,
+    session_gen: &AtomicU32,
+    session_active: &AtomicBool,
+) {
+    if !*charging_session_active {
+        *charging_session_active = true;
+        session_active.store(true, Ordering::Relaxed);
+        session_gen.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 结束充电会话，停止金标动画广播补发
+#[cfg(unix)]
+fn stop_charging_session(charging_session_active: &mut bool, session_active: &AtomicBool) {
+    *charging_session_active = false;
+    session_active.store(false, Ordering::Relaxed);
 }

@@ -14,6 +14,7 @@ use crate::common::utils;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
 use crate::pd::PdVerifier;
+use crate::platform::EventFd;
 #[cfg(unix)]
 use std::io;
 
@@ -21,11 +22,12 @@ pub fn spawn_pd_verified_monitor(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
     free_enabled: Arc<AtomicBool>,
+    stop_event: Arc<EventFd>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("qcom".to_string())
         .spawn(move || {
-            if let Err(e) = worker(running, pd_verifier, free_enabled) {
+            if let Err(e) = worker(running, pd_verifier, free_enabled, stop_event) {
                 error!("qcom线程出错: {}", e);
             }
         })
@@ -36,16 +38,17 @@ fn worker(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
     free_enabled: Arc<AtomicBool>,
+    stop_event: Arc<EventFd>,
 ) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
     info!("[{}] 启动qcom监控线程...", thread_name);
 
     #[cfg(unix)]
-    run_unix(running, pd_verifier, free_enabled)?;
+    run_unix(running, pd_verifier, free_enabled, stop_event)?;
 
     #[cfg(not(unix))]
     {
-        let _ = (running, pd_verifier, free_enabled);
+        let _ = (running, pd_verifier, free_enabled, stop_event);
     }
 
     Ok(())
@@ -56,6 +59,7 @@ fn run_unix(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
     free_enabled: Arc<AtomicBool>,
+    stop_event: Arc<EventFd>,
 ) -> Result<()> {
     use std::os::raw::c_int;
 
@@ -85,6 +89,26 @@ fn run_unix(
         );
     }
 
+    let mut stop_epoll_event = libc::epoll_event {
+        events: libc::EPOLLIN as u32,
+        u64: stop_event.raw_fd() as u64,
+    };
+    let result = unsafe {
+        libc::epoll_ctl(
+            epoll_fd,
+            libc::EPOLL_CTL_ADD,
+            stop_event.raw_fd(),
+            &mut stop_epoll_event,
+        )
+    };
+    if result == -1 {
+        unsafe {
+            libc::close(uevent_sock);
+            libc::close(epoll_fd);
+        }
+        return Err(FreePPSError::InotifyError("无法将停止事件添加到epoll".to_string()).into());
+    }
+
     info!(
         "[{}] 开始通过uevent监控qcom状态: {}",
         utils::get_current_thread_name(),
@@ -93,31 +117,13 @@ fn run_unix(
 
     let mut eintr_count: u64 = 0;
     let mut eagain_count: u64 = 0;
-    let mut last_status_log = false;
     let mut charging_session_active = false;
     let mut last_interrupt_report = std::time::Instant::now();
     let interrupt_report_interval = std::time::Duration::from_secs(60 * 60 * 10);
     let epoll_timeout_ms: c_int = -1;
 
+    let mut events = [libc::epoll_event { events: 0, u64: 0 }; 10];
     while running.load(std::sync::atomic::Ordering::Relaxed) {
-        let enabled = free_enabled.load(std::sync::atomic::Ordering::Relaxed);
-
-        if !enabled {
-            if !last_status_log {
-                info!("[qcom] free文件为0，暂停PD验证节点监控");
-                last_status_log = true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            continue;
-        }
-
-        if last_status_log {
-            info!("[qcom] free文件恢复为1，重新启动PD验证节点监控");
-            last_status_log = false;
-        }
-
-        let mut events: Vec<libc::epoll_event> = vec![libc::epoll_event { events: 0, u64: 0 }; 10];
-
         let nfds = unsafe {
             libc::epoll_wait(
                 epoll_fd,
@@ -163,6 +169,21 @@ fn run_unix(
             }
             continue;
         } else if nfds > 0 {
+            let ready_events = &events[..nfds as usize];
+            if ready_events
+                .iter()
+                .any(|event| event.u64 == stop_event.raw_fd() as u64)
+            {
+                stop_event.clear()?;
+                break;
+            }
+            if !ready_events
+                .iter()
+                .any(|event| event.u64 == uevent_sock as u64)
+            {
+                continue;
+            }
+
             let mut buffer = [0u8; 4096];
             let bytes_read = unsafe {
                 libc::recv(
@@ -174,6 +195,12 @@ fn run_unix(
             };
 
             if bytes_read > 0 {
+                // Always drain the netlink socket. Leaving an event queued while the
+                // module is paused would make epoll return immediately in a busy loop.
+                if !free_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
+
                 let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
 
                 // 提取POWER_SUPPLY_STATUS

@@ -14,6 +14,7 @@ use crate::common::constants::IN_CLOSE_WRITE;
 use crate::common::constants::IN_MODIFY;
 use crate::common::utils;
 use crate::monitoring::{FileMonitor, ModuleManager};
+use crate::platform::EventFd;
 #[cfg(unix)]
 use std::io;
 
@@ -21,11 +22,12 @@ pub fn spawn_free_file_monitor(
     running: Arc<AtomicBool>,
     module_manager: Arc<ModuleManager>,
     free_enabled: Arc<AtomicBool>,
+    stop_event: Arc<EventFd>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("free-file-monitor".to_string())
         .spawn(move || {
-            if let Err(e) = worker(running, module_manager, free_enabled) {
+            if let Err(e) = worker(running, module_manager, free_enabled, stop_event) {
                 error!("free文件监控线程出错: {}", e);
             }
         })
@@ -36,6 +38,7 @@ fn worker(
     running: Arc<AtomicBool>,
     module_manager: Arc<ModuleManager>,
     free_enabled: Arc<AtomicBool>,
+    stop_event: Arc<EventFd>,
 ) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
     info!("[{}] 启动free文件监控线程...", thread_name);
@@ -50,12 +53,12 @@ fn worker(
 
     #[cfg(unix)]
     {
-        run_unix(running, module_manager, free_enabled)?;
+        run_unix(running, module_manager, free_enabled, stop_event)?;
     }
 
     #[cfg(not(unix))]
     {
-        let _ = (running, module_manager, free_enabled);
+        let _ = (running, module_manager, free_enabled, stop_event);
     }
 
     Ok(())
@@ -66,6 +69,7 @@ fn run_unix(
     running: Arc<AtomicBool>,
     module_manager: Arc<ModuleManager>,
     free_enabled: Arc<AtomicBool>,
+    stop_event: Arc<EventFd>,
 ) -> Result<()> {
     let file_monitor = FileMonitor::new()?;
 
@@ -73,6 +77,7 @@ fn run_unix(
     file_monitor.add_watch(FREE_FILE, IN_MODIFY | IN_CLOSE_WRITE)?;
 
     file_monitor.add_inotify_to_epoll()?;
+    file_monitor.add_fd_to_epoll(stop_event.raw_fd())?;
 
     let mut buffer = [0u8; 1024];
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
@@ -90,6 +95,21 @@ fn run_unix(
         };
 
         if nfds <= 0 {
+            continue;
+        }
+
+        let ready_events = &events[..nfds as usize];
+        if ready_events
+            .iter()
+            .any(|event| event.u64 == stop_event.raw_fd() as u64)
+        {
+            stop_event.clear()?;
+            break;
+        }
+        if !ready_events
+            .iter()
+            .any(|event| event.u64 == file_monitor.inotify_fd as u64)
+        {
             continue;
         }
 

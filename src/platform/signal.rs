@@ -3,10 +3,48 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 #[cfg(unix)]
-use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::{AtomicI32, AtomicPtr};
+
+use crate::platform::EventFd;
 
 #[cfg(unix)]
 static RUNNING_FLAG_PTR: AtomicPtr<AtomicBool> = AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(unix)]
+static SIGNAL_EVENT_FD: AtomicI32 = AtomicI32::new(-1);
+
+pub struct SignalWaiter {
+    event: Arc<EventFd>,
+}
+
+impl SignalWaiter {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            event: Arc::new(EventFd::new()?),
+        })
+    }
+
+    #[cfg(unix)]
+    pub fn wait(&self) -> std::io::Result<()> {
+        loop {
+            let mut poll_fd = libc::pollfd {
+                fd: self.event.raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let result = unsafe { libc::poll(&mut poll_fd, 1, -1) };
+            if result > 0 {
+                self.event.clear()?;
+                return Ok(());
+            } else if result == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
 
 #[cfg(unix)]
 /// # Safety
@@ -18,6 +56,18 @@ unsafe extern "C" fn termination_signal_handler(_sig: libc::c_int) {
             (*ptr).store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
+
+    let event_fd = SIGNAL_EVENT_FD.load(std::sync::atomic::Ordering::Relaxed);
+    if event_fd != -1 {
+        let value: u64 = 1;
+        unsafe {
+            libc::write(
+                event_fd,
+                (&value as *const u64).cast::<libc::c_void>(),
+                std::mem::size_of::<u64>(),
+            );
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -25,17 +75,18 @@ unsafe extern "C" fn termination_signal_handler(_sig: libc::c_int) {
 ///
 /// # Safety
 /// 调用者必须保证传入的 `running` 在整个信号处理期间保持有效。
-pub fn install_signal_handlers(running: &Arc<AtomicBool>) {
+pub fn install_signal_handlers(running: &Arc<AtomicBool>, waiter: &SignalWaiter) {
     RUNNING_FLAG_PTR.store(
         Arc::as_ptr(running) as *mut AtomicBool,
         std::sync::atomic::Ordering::SeqCst,
     );
+    SIGNAL_EVENT_FD.store(waiter.event.raw_fd(), std::sync::atomic::Ordering::SeqCst);
 
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = termination_signal_handler as *const () as usize;
         libc::sigemptyset(&mut action.sa_mask);
-        action.sa_flags = libc::SA_RESTART;
+        action.sa_flags = 0;
 
         if libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut()) == -1 {
             error!("注册SIGINT处理器失败: {}", std::io::Error::last_os_error());
@@ -48,4 +99,4 @@ pub fn install_signal_handlers(running: &Arc<AtomicBool>) {
 }
 
 #[cfg(not(unix))]
-pub fn install_signal_handlers(_: &Arc<AtomicBool>) {}
+pub fn install_signal_handlers(_: &Arc<AtomicBool>, _: &SignalWaiter) {}

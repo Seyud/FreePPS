@@ -66,7 +66,11 @@ fn run_unix(
 
     // 将 inotify_fd 添加到 epoll
     file_monitor.add_inotify_to_epoll()?;
-    file_monitor.add_fd_to_epoll(stop_event.raw_fd())?;
+    file_monitor.add_fd_to_epoll(
+        stop_event.raw_fd(),
+        libc::EPOLLIN as u32,
+        stop_event.raw_fd() as u64,
+    )?;
 
     let mut buffer = [0u8; 1024];
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];

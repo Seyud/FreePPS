@@ -4,12 +4,12 @@ mod pd;
 mod platform;
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::thread;
 #[cfg(not(unix))]
 use std::time::Duration;
 
-use common::constants::{FREE_FILE, PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
+use common::constants::{PD_ADAPTER_VERIFIED_PATH, PD_VERIFIED_PATH};
 use common::utils;
 use log::{error, info};
 use monitoring::{
@@ -34,9 +34,10 @@ fn main() {
     let module_manager = Arc::new(ModuleManager::new().expect("创建模块管理器失败"));
 
     // 初始化阶段：确保基础文件存在并设置初始状态
-    if let Err(e) = module_manager.initialize_module() {
+    let initial_mode = module_manager.initialize_module().unwrap_or_else(|e| {
         error!("模块初始化失败: {}", e);
-    }
+        monitoring::ChargingMode::Native
+    });
 
     // 创建运行标志
     let running = Arc::new(AtomicBool::new(true));
@@ -46,10 +47,9 @@ fn main() {
     let pd_verifier = Arc::new(PdVerifier::new().expect("创建PD验证器失败"));
     let pd_adapter_verifier = Arc::new(PdAdapterVerifier::new().expect("创建PD适配器验证器失败"));
 
-    let free_enabled = Arc::new(AtomicBool::new(
-        monitoring::FileMonitor::read_file_content(FREE_FILE).unwrap_or_else(|_| "0".to_string())
-            == "1",
-    ));
+    let charging_mode = Arc::new(AtomicU8::new(initial_mode as u8));
+    let qcom_config_event = Arc::new(EventFd::new().expect("创建qcom配置事件失败"));
+    let mtk_config_event = Arc::new(EventFd::new().expect("创建mtk配置事件失败"));
 
     let mut thread_handles: Vec<thread::JoinHandle<()>> = Vec::new();
     let mut stop_events: Vec<Arc<EventFd>> = Vec::new();
@@ -60,7 +60,9 @@ fn main() {
     thread_handles.push(spawn_free_file_monitor(
         Arc::clone(&running),
         Arc::clone(&module_manager),
-        Arc::clone(&free_enabled),
+        Arc::clone(&charging_mode),
+        Arc::clone(&qcom_config_event),
+        Arc::clone(&mtk_config_event),
         free_stop_event,
     ));
 
@@ -81,7 +83,8 @@ fn main() {
         thread_handles.push(spawn_pd_verified_monitor(
             Arc::clone(&running),
             Arc::clone(&pd_verifier),
-            Arc::clone(&free_enabled),
+            Arc::clone(&charging_mode),
+            Arc::clone(&qcom_config_event),
             qcom_stop_event,
         ));
     } else {
@@ -98,7 +101,8 @@ fn main() {
         thread_handles.push(spawn_pd_adapter_verified_monitor(
             Arc::clone(&running),
             Arc::clone(&pd_adapter_verifier),
-            Arc::clone(&free_enabled),
+            Arc::clone(&charging_mode),
+            Arc::clone(&mtk_config_event),
             mtk_stop_event,
         ));
     } else {

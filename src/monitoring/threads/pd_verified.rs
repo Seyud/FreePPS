@@ -1,36 +1,64 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-#[cfg(unix)]
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use log::debug;
-use log::{error, info};
+use log::{debug, error, info, warn};
 
 #[cfg(unix)]
 use crate::common::constants::{
-    BATTERY_STATUS_PATH, FREE_FILE, IN_CLOSE_WRITE, IN_MODIFY, PD_VERIFIED_PATH,
+    BATTERY_STATUS_PATH, INPUT_SUSPEND_PATH, PD_VERIFIED_PATH, TYPEC_MODE_PATH, USB_REAL_TYPE_PATH,
 };
 use crate::common::utils;
+use crate::monitoring::ChargingMode;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
-use crate::pd::PdVerifier;
-#[cfg(unix)]
-use crate::pd::{BroadcastForger, spawn_broadcast_forger_worker};
-#[cfg(unix)]
-use std::sync::atomic::Ordering;
+use crate::pd::{BroadcastForger, PdVerifier, spawn_broadcast_forger_worker};
+use crate::platform::EventFd;
+
+const NATIVE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(4);
+const RECONNECT_STEP_DELAY: Duration = Duration::from_secs(1);
+const DETACH_DEBOUNCE: Duration = Duration::from_millis(1500);
+
+#[derive(Clone, Copy, Debug)]
+enum AutoPhase {
+    Idle,
+    WaitingNative(Instant),
+    Suspended(Instant),
+    PublicEnabled(Instant),
+    Settled,
+}
+
+impl AutoPhase {
+    fn deadline(self) -> Option<Instant> {
+        match self {
+            Self::WaitingNative(deadline)
+            | Self::Suspended(deadline)
+            | Self::PublicEnabled(deadline) => Some(deadline),
+            Self::Idle | Self::Settled => None,
+        }
+    }
+}
 
 pub fn spawn_pd_verified_monitor(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
-    free_enabled: Arc<AtomicBool>,
+    charging_mode: Arc<AtomicU8>,
+    config_event: Arc<EventFd>,
+    stop_event: Arc<EventFd>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("qcom".to_string())
         .spawn(move || {
-            if let Err(e) = worker(running, pd_verifier, free_enabled) {
-                error!("qcom线程出错: {}", e);
+            if let Err(error) = worker(
+                running,
+                pd_verifier,
+                charging_mode,
+                config_event,
+                stop_event,
+            ) {
+                error!("qcom线程出错: {}", error);
             }
         })
         .expect("创建qcom线程失败")
@@ -39,276 +67,303 @@ pub fn spawn_pd_verified_monitor(
 fn worker(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
-    free_enabled: Arc<AtomicBool>,
+    charging_mode: Arc<AtomicU8>,
+    config_event: Arc<EventFd>,
+    stop_event: Arc<EventFd>,
 ) -> Result<()> {
-    let thread_name = utils::get_current_thread_name();
-    info!("[{}] 启动qcom监控线程...", thread_name);
+    info!("[{}] 启动qcom监控线程...", utils::get_current_thread_name());
 
     #[cfg(unix)]
-    run_unix(running, pd_verifier, free_enabled)?;
+    run_unix(
+        running,
+        pd_verifier,
+        charging_mode,
+        config_event,
+        stop_event,
+    )?;
 
     #[cfg(not(unix))]
-    {
-        let _ = (running, pd_verifier, free_enabled);
-    }
+    let _ = (
+        running,
+        pd_verifier,
+        charging_mode,
+        config_event,
+        stop_event,
+    );
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_attached() -> Result<bool> {
+    Ok(FileMonitor::read_file_content(TYPEC_MODE_PATH)? != "Nothing attached")
+}
+
+#[cfg(unix)]
+fn set_input_suspended(suspended: bool) -> Result<()> {
+    FileMonitor::write_file_content(INPUT_SUSPEND_PATH, if suspended { "1" } else { "0" })
+}
+
+#[cfg(unix)]
+fn epoll_timeout(phase: AutoPhase, detach_deadline: Option<Instant>) -> libc::c_int {
+    let deadline = match (phase.deadline(), detach_deadline) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
+    };
+    let Some(deadline) = deadline else {
+        return -1;
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        0
+    } else {
+        remaining.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int
+    }
 }
 
 #[cfg(unix)]
 fn run_unix(
     running: Arc<AtomicBool>,
     pd_verifier: Arc<PdVerifier>,
-    free_enabled: Arc<AtomicBool>,
+    charging_mode: Arc<AtomicU8>,
+    config_event: Arc<EventFd>,
+    stop_event: Arc<EventFd>,
 ) -> Result<()> {
-    // 每线程独立创建 inotify（监控 free 文件），与 uevent 共用同一 epoll：
-    // free=0 时也无限阻塞在 epoll_wait，由 free 文件 inotify 事件唤醒，实现零周期唤醒
-    let file_monitor = FileMonitor::new()?;
-    file_monitor.add_watch(FREE_FILE, IN_MODIFY | IN_CLOSE_WRITE)?;
-    file_monitor.add_inotify_to_epoll()?;
-
     let uevent_sock = FileMonitor::create_uevent_monitor()?;
-    if let Err(e) = file_monitor.add_fd_to_epoll(
-        uevent_sock,
-        (libc::EPOLLIN | libc::EPOLLPRI) as u32,
-        uevent_sock as u64,
-    ) {
-        unsafe {
-            libc::close(uevent_sock);
+    let event_monitor = FileMonitor::new()?;
+
+    let mut mode = ChargingMode::from_raw(charging_mode.load(Ordering::Acquire));
+    let mut uevent_registered = mode != ChargingMode::Native;
+    let setup = event_monitor
+        .add_fd_to_epoll(
+            stop_event.raw_fd(),
+            libc::EPOLLIN as u32,
+            stop_event.raw_fd() as u64,
+        )
+        .and_then(|()| {
+            event_monitor.add_fd_to_epoll(
+                config_event.raw_fd(),
+                libc::EPOLLIN as u32,
+                config_event.raw_fd() as u64,
+            )
+        })
+        .and_then(|()| {
+            if uevent_registered {
+                event_monitor.add_fd_to_epoll(
+                    uevent_sock,
+                    (libc::EPOLLIN | libc::EPOLLPRI) as u32,
+                    uevent_sock as u64,
+                )
+            } else {
+                Ok(())
+            }
+        });
+    if let Err(error) = setup {
+        unsafe { libc::close(uevent_sock) };
+        return Err(error);
+    }
+
+    info!("通过uevent与短时协商定时器监控qcom状态");
+    let mut attached = is_attached()?;
+    let mut detach_deadline = None;
+    let mut phase = match (mode, attached) {
+        (ChargingMode::Automatic, true) => {
+            AutoPhase::WaitingNative(Instant::now() + NATIVE_NEGOTIATION_TIMEOUT)
         }
-        return Err(e);
-    }
+        _ => AutoPhase::Idle,
+    };
 
-    info!(
-        "[{}] 开始通过uevent监控qcom状态: {}",
-        utils::get_current_thread_name(),
-        PD_VERIFIED_PATH
-    );
-
-    // free 暂停状态用本线程本地变量维护：仅初始化时读取共享原子，
-    // 之后由 inotify 唤醒时直接读 free 文件作为权威状态。
-    // （free_file.rs 更新共享原子前有约100ms延迟，若依赖原子可能漏掉 0↔1 切换）
-    let mut enabled = free_enabled.load(Ordering::Relaxed);
-    if !enabled {
-        // 启动即暂停：从 epoll 移除 uevent socket，暂停期间仅由 free 文件 inotify 唤醒
-        file_monitor.remove_fd_from_epoll(uevent_sock)?;
-    }
-
-    // 金标动画广播伪造：会话状态由本线程（qcom）驱动，broadcast-forger 线程负责发送
+    // Preserve upstream's SystemUI gold-label/100 W broadcast feature. The
+    // worker is only activated for a charging session and exits with the daemon.
     let session_gen = Arc::new(AtomicU32::new(0));
     let session_active = Arc::new(AtomicBool::new(false));
-    let broadcast_forger = Arc::new(BroadcastForger);
-    spawn_broadcast_forger_worker(
+    let broadcast_handle = spawn_broadcast_forger_worker(
         Arc::clone(&running),
         Arc::clone(&session_gen),
         Arc::clone(&session_active),
-        Arc::clone(&broadcast_forger),
+        Arc::new(BroadcastForger),
     );
-
-    let mut eintr_count: u64 = 0;
-    let mut eagain_count: u64 = 0;
     let mut charging_session_active = false;
-    // 启动时若已处于充电状态（如开机前已插电）：初始化充电会话并触发金标动画广播伪造
-    if enabled
+    if uevent_registered
+        && attached
         && FileMonitor::read_file_content(BATTERY_STATUS_PATH).unwrap_or_default() == "Charging"
     {
         start_charging_session(&mut charging_session_active, &session_gen, &session_active);
-        info!("[qcom] 启动时已处于充电状态，初始化充电会话并触发金标动画广播伪造");
     }
-    let mut last_interrupt_report = std::time::Instant::now();
-    let interrupt_report_interval = std::time::Duration::from_secs(60 * 60 * 10);
 
-    let mut events = [libc::epoll_event { events: 0, u64: 0 }; 10];
+    let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
 
     while running.load(Ordering::Relaxed) {
-        let nfds = match file_monitor.wait_events(&mut events, -1) {
-            Ok(nfds) => nfds,
-            Err(err) => {
-                match err.raw_os_error() {
-                    Some(code) if code == libc::EINTR || code == libc::EAGAIN => {
-                        if code == libc::EINTR {
-                            eintr_count += 1;
-                        } else {
-                            eagain_count += 1;
-                        }
-
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_interrupt_report) >= interrupt_report_interval
-                            && (eintr_count > 0 || eagain_count > 0)
-                        {
-                            debug!(
-                                "epoll_wait暂时中断统计(最近{}秒): EINTR={}次, EAGAIN={}次",
-                                interrupt_report_interval.as_secs(),
-                                eintr_count,
-                                eagain_count
-                            );
-                            eintr_count = 0;
-                            eagain_count = 0;
-                            last_interrupt_report = now;
-                        }
-                    }
-                    Some(code) => {
-                        error!("epoll_wait错误(code={})，5秒后重试：{}", code, err);
-                        std::thread::sleep(std::time::Duration::from_millis(5000));
-                    }
-                    None => {
-                        error!("epoll_wait错误(未知code)，5秒后重试：{}", err);
-                        std::thread::sleep(std::time::Duration::from_millis(5000));
-                    }
+        let nfds = match event_monitor
+            .wait_events(&mut events, epoll_timeout(phase, detach_deadline))
+        {
+            Ok(count) => count,
+            Err(error) => {
+                if matches!(error.raw_os_error(), Some(code) if code == libc::EINTR || code == libc::EAGAIN)
+                {
+                    continue;
                 }
+                error!("qcom epoll_wait失败: {}", error);
+                thread::sleep(Duration::from_secs(1));
                 continue;
             }
         };
 
-        if nfds <= 0 {
+        let ready = &events[..nfds as usize];
+        if ready
+            .iter()
+            .any(|event| event.u64 == stop_event.raw_fd() as u64)
+        {
+            stop_event.clear()?;
+            break;
+        }
+
+        if ready
+            .iter()
+            .any(|event| event.u64 == config_event.raw_fd() as u64)
+        {
+            config_event.clear()?;
+            if matches!(phase, AutoPhase::Suspended(_) | AutoPhase::PublicEnabled(_)) {
+                set_input_suspended(false)?;
+            }
+            let new_mode = ChargingMode::from_raw(charging_mode.load(Ordering::Acquire));
+            let should_monitor_uevents = new_mode != ChargingMode::Native;
+            if should_monitor_uevents != uevent_registered {
+                if should_monitor_uevents {
+                    event_monitor.add_fd_to_epoll(
+                        uevent_sock,
+                        (libc::EPOLLIN | libc::EPOLLPRI) as u32,
+                        uevent_sock as u64,
+                    )?;
+                } else {
+                    event_monitor.remove_fd_from_epoll(uevent_sock)?;
+                }
+                uevent_registered = should_monitor_uevents;
+                info!("[qcom] uevent监控状态: {}", uevent_registered);
+            }
+            mode = new_mode;
+            attached = is_attached()?;
+            detach_deadline = None;
+            phase = match (mode, attached) {
+                (ChargingMode::Automatic, true) => {
+                    AutoPhase::WaitingNative(Instant::now() + NATIVE_NEGOTIATION_TIMEOUT)
+                }
+                _ => AutoPhase::Idle,
+            };
+            if uevent_registered && attached {
+                start_charging_session(&mut charging_session_active, &session_gen, &session_active);
+            } else {
+                stop_charging_session(&mut charging_session_active, &session_active);
+            }
+            debug!("qcom收到模式变化: {:?}", mode);
+        }
+
+        if uevent_registered && ready.iter().any(|event| event.u64 == uevent_sock as u64) {
+            // Drain every queued netlink datagram so epoll cannot spin on stale events.
+            let mut buffer = [0u8; 4096];
+            loop {
+                let read = unsafe {
+                    libc::recv(
+                        uevent_sock,
+                        buffer.as_mut_ptr().cast::<libc::c_void>(),
+                        buffer.len(),
+                        libc::MSG_DONTWAIT,
+                    )
+                };
+                if read <= 0 {
+                    break;
+                }
+            }
+        }
+
+        let physically_attached = is_attached()?;
+        if attached && !physically_attached {
+            let deadline = detach_deadline.get_or_insert(Instant::now() + DETACH_DEBOUNCE);
+            if Instant::now() >= *deadline {
+                attached = false;
+                detach_deadline = None;
+                if matches!(phase, AutoPhase::Suspended(_) | AutoPhase::PublicEnabled(_)) {
+                    set_input_suspended(false)?;
+                }
+                if mode == ChargingMode::Automatic {
+                    pd_verifier.set_pd_verified(false)?;
+                    info!("[自动] 已拔出，恢复小米协议优先基线");
+                }
+                stop_charging_session(&mut charging_session_active, &session_active);
+                phase = AutoPhase::Idle;
+            }
+        } else if physically_attached {
+            detach_deadline = None;
+            if !attached {
+                attached = true;
+                if mode == ChargingMode::Automatic {
+                    phase = AutoPhase::WaitingNative(Instant::now() + NATIVE_NEGOTIATION_TIMEOUT);
+                    info!("[自动] 检测到连接，等待小米协议认证");
+                }
+                if mode != ChargingMode::Native {
+                    start_charging_session(
+                        &mut charging_session_active,
+                        &session_gen,
+                        &session_active,
+                    );
+                }
+            }
+        }
+
+        if mode != ChargingMode::Automatic || !attached {
             continue;
         }
 
-        // 优先处理 free 文件 inotify 事件，刷新 enabled 后再处理 uevent，
-        // 保证同一批事件中 free=0 时 uevent 不会被误处理
-        if events
-            .iter()
-            .take(nfds as usize)
-            .any(|ev| ev.u64 == file_monitor.inotify_fd as u64)
-        {
-            let mut inotify_buffer = [0u8; 1024];
-            let bytes_read = unsafe {
-                libc::read(
-                    file_monitor.inotify_fd,
-                    inotify_buffer.as_mut_ptr() as *mut std::os::raw::c_void,
-                    inotify_buffer.len(),
-                )
-            };
-
-            if bytes_read > 0 {
-                let bytes_read = bytes_read as usize;
-                let event_size = std::mem::size_of::<libc::inotify_event>();
-                let mut offset = 0usize;
-                let mut close_write_seen = false;
-                while offset + event_size <= bytes_read {
-                    let event_ptr = unsafe {
-                        inotify_buffer.as_ptr().add(offset) as *const libc::inotify_event
-                    };
-                    let event = unsafe { &*event_ptr };
-                    if (event.mask & libc::IN_CLOSE_WRITE) != 0 {
-                        close_write_seen = true;
+        phase = match phase {
+            AutoPhase::WaitingNative(deadline) => {
+                if FileMonitor::read_file_content(PD_VERIFIED_PATH)? == "1" {
+                    info!("[自动] 小米协议认证成功，保持原生协商");
+                    AutoPhase::Settled
+                } else if Instant::now() >= deadline {
+                    let usb_type = FileMonitor::read_file_content(USB_REAL_TYPE_PATH)?;
+                    if usb_type == "PD_PPS" {
+                        info!("[自动] 未检测到小米认证，开始一次公版PPS软件重连");
+                        set_input_suspended(true)?;
+                        AutoPhase::Suspended(Instant::now() + RECONNECT_STEP_DELAY)
+                    } else {
+                        warn!("[自动] 未认证且接口类型为{}，本次不强制切换", usb_type);
+                        AutoPhase::Settled
                     }
-                    offset += event_size + event.len as usize;
-                }
-
-                if close_write_seen {
-                    // 直接读 free 文件内容作为权威状态
-                    let new_enabled = FileMonitor::read_file_content(FREE_FILE)? == "1";
-                    if new_enabled != enabled {
-                        if new_enabled {
-                            // 恢复：把 uevent socket 重新加入 epoll
-                            file_monitor.add_fd_to_epoll(
-                                uevent_sock,
-                                (libc::EPOLLIN | libc::EPOLLPRI) as u32,
-                                uevent_sock as u64,
-                            )?;
-                            info!("[qcom] free文件恢复为1，重新启动PD验证节点监控");
-                            // 恢复时若已处于充电状态（free=0期间未跟踪会话），补触发金标动画广播伪造
-                            if !charging_session_active
-                                && FileMonitor::read_file_content(BATTERY_STATUS_PATH)
-                                    .unwrap_or_default()
-                                    == "Charging"
-                            {
-                                start_charging_session(
-                                    &mut charging_session_active,
-                                    &session_gen,
-                                    &session_active,
-                                );
-                                info!("[qcom] free恢复时已处于充电状态，触发金标动画广播伪造");
-                            }
-                        } else {
-                            // 暂停：从 epoll 移除 uevent socket，暂停期间不再被 uevent 唤醒
-                            file_monitor.remove_fd_from_epoll(uevent_sock)?;
-                            info!("[qcom] free文件为0，暂停PD验证节点监控");
-                        }
-                        enabled = new_enabled;
-                    }
+                } else {
+                    AutoPhase::WaitingNative(deadline)
                 }
             }
-        }
-
-        // free=0 时 uevent socket 已从 epoll 移除，不会因 uevent 被唤醒；
-        // 同一批事件中残留的 uevent 事件在暂停态直接跳过，不读取
-        for ev in events.iter().take(nfds as usize) {
-            if ev.u64 != uevent_sock as u64 || !enabled {
-                continue;
+            AutoPhase::Suspended(deadline) if Instant::now() >= deadline => {
+                pd_verifier.set_pd_verified(true)?;
+                AutoPhase::PublicEnabled(Instant::now() + RECONNECT_STEP_DELAY)
             }
-
-            let mut buffer = [0u8; 4096];
-            let bytes_read = unsafe {
-                libc::recv(
-                    uevent_sock,
-                    buffer.as_mut_ptr() as *mut std::os::raw::c_void,
-                    buffer.len(),
-                    libc::MSG_DONTWAIT,
-                )
-            };
-
-            if bytes_read <= 0 {
-                continue;
-            }
-
-            let uevent_data = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
-
-            // 提取POWER_SUPPLY_STATUS
-            let fields = uevent_data.split(['\0', '\n']);
-            let status = fields
-                .clone()
-                .find(|field| field.starts_with("POWER_SUPPLY_STATUS="))
-                .and_then(|field| field.split_once('=').map(|(_, value)| value));
-
-            let mut should_set_node = false;
-
-            // 充电过程中不强制写入pd_verifed：
-            // - 小米原装充电头：内核通过verify_process自行管理pd_verifed
-            //   （verify结束后内核自己设pd_verifed=1），反复写入会干扰MIPPS握手
-            // - 公版PPS充电头：内核不碰pd_verifed，依赖启动时设置的值
-            // 仅在拔出(Discharging)时设置pd_verifed=1，为下次插电准备
-            if let Some("Discharging") = status {
-                if charging_session_active {
-                    info!(
-                        "[qcom] 检测到Charging→Discharging状态跳变，设置pd_verifed=1为下次插电准备"
-                    );
-                    should_set_node = true;
-                    stop_charging_session(&mut charging_session_active, &session_active);
-                }
-            } else if let Some("Charging") = status
-                && !charging_session_active
-            {
+            AutoPhase::PublicEnabled(deadline) if Instant::now() >= deadline => {
+                set_input_suspended(false)?;
+                // The first upstream broadcast attempt occurs before automatic
+                // fallback has enabled public PPS. Start a new generation now
+                // so SystemUI can advertise the negotiated public-PPS power.
+                stop_charging_session(&mut charging_session_active, &session_active);
                 start_charging_session(&mut charging_session_active, &session_gen, &session_active);
-                debug!("[qcom] 检测到充电会话开始");
+                info!("[自动] 公版PPS软件重连完成，本次连接不再重试");
+                AutoPhase::Settled
             }
-
-            if should_set_node {
-                let pd_content = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
-                if pd_content == "0" {
-                    info!("[qcom] 设置pd_verifed=1");
-                    pd_verifier.set_pd_verified(true)?;
-                }
-            }
-        }
+            other => other,
+        };
     }
 
-    if eintr_count > 0 || eagain_count > 0 {
-        debug!(
-            "epoll_wait暂时中断统计(线程退出前): EINTR={}次, EAGAIN={}次",
-            eintr_count, eagain_count
-        );
+    if matches!(phase, AutoPhase::Suspended(_) | AutoPhase::PublicEnabled(_)) {
+        let _ = set_input_suspended(false);
     }
-
     unsafe {
         libc::close(uevent_sock);
     }
-
+    if let Err(error) = broadcast_handle.join() {
+        error!("broadcast-forger线程join失败: {:?}", error);
+    }
     Ok(())
 }
 
-/// 开始一次充电会话并触发金标动画广播伪造（幂等：已在会话中时不重复触发）
 #[cfg(unix)]
 fn start_charging_session(
     charging_session_active: &mut bool,
@@ -322,7 +377,6 @@ fn start_charging_session(
     }
 }
 
-/// 结束充电会话，停止金标动画广播补发
 #[cfg(unix)]
 fn stop_charging_session(charging_session_active: &mut bool, session_active: &AtomicBool) {
     *charging_session_active = false;

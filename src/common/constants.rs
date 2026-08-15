@@ -12,8 +12,12 @@ pub const IN_DELETE: u32 = 0x00000200;
 #[cfg(unix)]
 pub const MODULE_BASE_PATH: &str = "/data/adb/modules/FreePPS";
 pub const FREE_FILE: &str = "/data/adb/modules/FreePPS/free";
+pub const AUTO_FILE: &str = "/data/adb/modules/FreePPS/auto";
 pub const DISABLE_FILE: &str = "/data/adb/modules/FreePPS/disable";
 #[cfg(unix)]
 pub const MODULE_PROP: &str = "/data/adb/modules/FreePPS/module.prop";
 pub const PD_VERIFIED_PATH: &str = "/sys/class/qcom-battery/pd_verifed";
 pub const PD_ADAPTER_VERIFIED_PATH: &str = "/sys/class/Charging_Adapter/pd_adapter/usbpd_verifed";
+pub const INPUT_SUSPEND_PATH: &str = "/sys/class/qcom-battery/input_suspend";
+pub const TYPEC_MODE_PATH: &str = "/sys/class/qcom-battery/typec_mode";
+pub const USB_REAL_TYPE_PATH: &str = "/sys/class/qcom-battery/usb_real_type";

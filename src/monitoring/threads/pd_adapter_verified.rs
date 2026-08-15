@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::thread;
 
 use anyhow::Result;
@@ -10,6 +10,7 @@ use crate::common::FreePPSError;
 #[cfg(unix)]
 use crate::common::constants::PD_ADAPTER_VERIFIED_PATH;
 use crate::common::utils;
+use crate::monitoring::ChargingMode;
 #[cfg(unix)]
 use crate::monitoring::FileMonitor;
 use crate::pd::PdAdapterVerifier;
@@ -19,13 +20,13 @@ use std::io;
 pub fn spawn_pd_adapter_verified_monitor(
     running: Arc<AtomicBool>,
     pd_adapter_verifier: Arc<PdAdapterVerifier>,
-    free_enabled: Arc<AtomicBool>,
+    charging_mode: Arc<AtomicU8>,
     stop_event: Arc<EventFd>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("mtk".to_string())
         .spawn(move || {
-            if let Err(e) = worker(running, pd_adapter_verifier, free_enabled, stop_event) {
+            if let Err(e) = worker(running, pd_adapter_verifier, charging_mode, stop_event) {
                 error!("mtk线程出错: {}", e);
             }
         })
@@ -35,18 +36,18 @@ pub fn spawn_pd_adapter_verified_monitor(
 fn worker(
     running: Arc<AtomicBool>,
     pd_adapter_verifier: Arc<PdAdapterVerifier>,
-    free_enabled: Arc<AtomicBool>,
+    charging_mode: Arc<AtomicU8>,
     stop_event: Arc<EventFd>,
 ) -> Result<()> {
     let thread_name = utils::get_current_thread_name();
     info!("[{}] 启动mtk监控线程...", thread_name);
 
     #[cfg(unix)]
-    run_unix(running, pd_adapter_verifier, free_enabled, stop_event)?;
+    run_unix(running, pd_adapter_verifier, charging_mode, stop_event)?;
 
     #[cfg(not(unix))]
     {
-        let _ = (running, pd_adapter_verifier, free_enabled, stop_event);
+        let _ = (running, pd_adapter_verifier, charging_mode, stop_event);
     }
 
     Ok(())
@@ -56,7 +57,7 @@ fn worker(
 fn run_unix(
     running: Arc<AtomicBool>,
     pd_adapter_verifier: Arc<PdAdapterVerifier>,
-    free_enabled: Arc<AtomicBool>,
+    charging_mode: Arc<AtomicU8>,
     stop_event: Arc<EventFd>,
 ) -> Result<()> {
     use std::os::raw::c_int;
@@ -195,7 +196,9 @@ fn run_unix(
             if bytes_read > 0 {
                 // Always drain the netlink socket. Leaving an event queued while the
                 // module is paused would make epoll return immediately in a busy loop.
-                if !free_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                if ChargingMode::from_raw(charging_mode.load(std::sync::atomic::Ordering::Acquire))
+                    == ChargingMode::Native
+                {
                     continue;
                 }
 

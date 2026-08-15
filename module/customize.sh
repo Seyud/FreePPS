@@ -5,10 +5,9 @@ MODDIR=${0%/*}
 # Function to detect key press (Volume Up or Volume Down) or timeout
 detect_key_press() {
     timeout_seconds=6
+    line=$(timeout "$timeout_seconds" getevent -ql | awk '/KEY_VOLUME/ {print; exit}')
 
-    read -r -t $timeout_seconds line < <(getevent -ql | awk '/KEY_VOLUME/ {print; exit}')
-
-    if [ $? -eq 142 ]; then
+    if [ -z "$line" ]; then
         echo "[!] No key pressed within $timeout_seconds seconds. Skipping installation..."
         return 1
     fi

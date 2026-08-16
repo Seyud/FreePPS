@@ -1,6 +1,6 @@
 [package]
 name = "FreePPS"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 authors = ["Seyud"]
 
@@ -23,4 +23,3 @@ opt-level = 1
 debug = true
 lto = false
 codegen-units = 256
-

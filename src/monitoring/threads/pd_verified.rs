@@ -178,10 +178,14 @@ fn run_unix(
     // worker is only activated for a charging session and exits with the daemon.
     let session_gen = Arc::new(AtomicU32::new(0));
     let session_active = Arc::new(AtomicBool::new(false));
+    let broadcast_session_event = Arc::new(EventFd::new()?);
+    let broadcast_stop_event = Arc::new(EventFd::new()?);
     let broadcast_handle = spawn_broadcast_forger_worker(
         Arc::clone(&running),
         Arc::clone(&session_gen),
         Arc::clone(&session_active),
+        Arc::clone(&broadcast_session_event),
+        Arc::clone(&broadcast_stop_event),
         Arc::new(BroadcastForger),
     );
     let mut charging_session_active = false;
@@ -189,7 +193,12 @@ fn run_unix(
         && attached
         && FileMonitor::read_file_content(BATTERY_STATUS_PATH).unwrap_or_default() == "Charging"
     {
-        start_charging_session(&mut charging_session_active, &session_gen, &session_active);
+        start_charging_session(
+            &mut charging_session_active,
+            &session_gen,
+            &session_active,
+            &broadcast_session_event,
+        );
     }
 
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
@@ -252,9 +261,18 @@ fn run_unix(
                 _ => AutoPhase::Idle,
             };
             if uevent_registered && attached {
-                start_charging_session(&mut charging_session_active, &session_gen, &session_active);
+                start_charging_session(
+                    &mut charging_session_active,
+                    &session_gen,
+                    &session_active,
+                    &broadcast_session_event,
+                );
             } else {
-                stop_charging_session(&mut charging_session_active, &session_active);
+                stop_charging_session(
+                    &mut charging_session_active,
+                    &session_active,
+                    &broadcast_session_event,
+                );
             }
             debug!("qcom收到模式变化: {:?}", mode);
         }
@@ -290,7 +308,11 @@ fn run_unix(
                     pd_verifier.set_pd_verified(false)?;
                     info!("[自动] 已拔出，恢复小米协议优先基线");
                 }
-                stop_charging_session(&mut charging_session_active, &session_active);
+                stop_charging_session(
+                    &mut charging_session_active,
+                    &session_active,
+                    &broadcast_session_event,
+                );
                 phase = AutoPhase::Idle;
             }
         } else if physically_attached {
@@ -306,6 +328,7 @@ fn run_unix(
                         &mut charging_session_active,
                         &session_gen,
                         &session_active,
+                        &broadcast_session_event,
                     );
                 }
             }
@@ -340,11 +363,6 @@ fn run_unix(
             }
             AutoPhase::PublicEnabled(deadline) if Instant::now() >= deadline => {
                 set_input_suspended(false)?;
-                // The first upstream broadcast attempt occurs before automatic
-                // fallback has enabled public PPS. Start a new generation now
-                // so SystemUI can advertise the negotiated public-PPS power.
-                stop_charging_session(&mut charging_session_active, &session_active);
-                start_charging_session(&mut charging_session_active, &session_gen, &session_active);
                 info!("[自动] 公版PPS软件重连完成，本次连接不再重试");
                 AutoPhase::Settled
             }
@@ -358,6 +376,9 @@ fn run_unix(
     unsafe {
         libc::close(uevent_sock);
     }
+    if let Err(error) = broadcast_stop_event.notify() {
+        error!("通知broadcast-forger线程停止失败: {}", error);
+    }
     if let Err(error) = broadcast_handle.join() {
         error!("broadcast-forger线程join失败: {:?}", error);
     }
@@ -369,16 +390,27 @@ fn start_charging_session(
     charging_session_active: &mut bool,
     session_gen: &AtomicU32,
     session_active: &AtomicBool,
+    session_event: &EventFd,
 ) {
     if !*charging_session_active {
         *charging_session_active = true;
         session_active.store(true, Ordering::Relaxed);
         session_gen.fetch_add(1, Ordering::Relaxed);
+        if let Err(error) = session_event.notify() {
+            warn!("通知broadcast-forger会话开始失败: {}", error);
+        }
     }
 }
 
 #[cfg(unix)]
-fn stop_charging_session(charging_session_active: &mut bool, session_active: &AtomicBool) {
+fn stop_charging_session(
+    charging_session_active: &mut bool,
+    session_active: &AtomicBool,
+    session_event: &EventFd,
+) {
     *charging_session_active = false;
     session_active.store(false, Ordering::Relaxed);
+    if let Err(error) = session_event.notify() {
+        warn!("通知broadcast-forger会话结束失败: {}", error);
+    }
 }

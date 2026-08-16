@@ -3,6 +3,7 @@ use crate::common::constants::{
 };
 use crate::common::utils;
 use crate::monitoring::FileMonitor;
+use crate::platform::EventFd;
 use log::{debug, info, warn};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -36,9 +37,6 @@ const FULL_POWER_DISPLAY_W: u32 = 100;
 
 // 弱充电头判定阈值：Vbus 电压低于此值视为弱充（<45W）不伪造
 const MIN_HIGH_POWER_VOLTAGE_UV: u64 = 12_000_000;
-
-// 会话轮询间隔：兼顾充电会话开始（含重启）的检测延迟与 CPU 占用
-const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// 金标动画广播伪造器
 ///
@@ -246,6 +244,8 @@ pub fn spawn_broadcast_forger_worker(
     running: Arc<AtomicBool>,
     session_gen: Arc<AtomicU32>,
     session_active: Arc<AtomicBool>,
+    session_event: Arc<EventFd>,
+    stop_event: Arc<EventFd>,
     forger: Arc<BroadcastForger>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
@@ -255,12 +255,46 @@ pub fn spawn_broadcast_forger_worker(
             info!("[{}] 启动金标动画广播伪造线程...", thread_name);
 
             let mut burst_done_for: Option<u32> = None;
+            let mut poll_fds = [
+                libc::pollfd {
+                    fd: session_event.raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: stop_event.raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
 
             while running.load(Ordering::Relaxed) {
-                // 会话未激活：等待下一次充电会话（新会话需重新执行首轮发送）
+                let result = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) };
+                if result == -1 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    warn!("[broadcast-forger] poll失败: {}", error);
+                    break;
+                }
+
+                if poll_fds[1].revents & libc::POLLIN != 0 {
+                    if let Err(error) = stop_event.clear() {
+                        warn!("[broadcast-forger] 清除停止事件失败: {}", error);
+                    }
+                    break;
+                }
+
+                if poll_fds[0].revents & libc::POLLIN == 0 {
+                    continue;
+                }
+                if let Err(error) = session_event.clear() {
+                    warn!("[broadcast-forger] 清除会话事件失败: {}", error);
+                }
+
                 if !session_active.load(Ordering::Relaxed) {
                     burst_done_for = None;
-                    thread::sleep(SESSION_POLL_INTERVAL);
                     continue;
                 }
 
@@ -270,10 +304,7 @@ pub fn spawn_broadcast_forger_worker(
                     // （让超级岛直接显示 100W MAX，避免多余的"快充中"回退通知）
                     burst_done_for = Some(generation);
                     forger.send_burst();
-                    continue;
                 }
-
-                thread::sleep(SESSION_POLL_INTERVAL);
             }
         })
         .expect("创建broadcast-forger线程失败")

@@ -20,6 +20,9 @@ use crate::platform::EventFd;
 const NATIVE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(4);
 const RECONNECT_STEP_DELAY: Duration = Duration::from_secs(1);
 const DETACH_DEBOUNCE: Duration = Duration::from_millis(1500);
+// Qualcomm uevents can be delivered just before the matching sysfs values are
+// visible. Reconcile once more after the event instead of polling while idle.
+const UEVENT_SETTLE_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug)]
 enum AutoPhase {
@@ -105,12 +108,21 @@ fn set_input_suspended(suspended: bool) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn epoll_timeout(phase: AutoPhase, detach_deadline: Option<Instant>) -> libc::c_int {
-    let deadline = match (phase.deadline(), detach_deadline) {
-        (Some(left), Some(right)) => Some(left.min(right)),
-        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-        (None, None) => None,
-    };
+fn epoll_timeout(
+    phase: AutoPhase,
+    detach_deadline: Option<Instant>,
+    uevent_recheck_deadline: Option<Instant>,
+    charger_detach_deadline: Option<Instant>,
+) -> libc::c_int {
+    let deadline = [
+        phase.deadline(),
+        detach_deadline,
+        uevent_recheck_deadline,
+        charger_detach_deadline,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     let Some(deadline) = deadline else {
         return -1;
     };
@@ -173,6 +185,9 @@ fn run_unix(
         }
         _ => AutoPhase::Idle,
     };
+    let mut uevent_recheck_deadline = None;
+    let mut public_retry_attempted = false;
+    let mut charger_detach_deadline = None;
 
     // Preserve upstream's SystemUI gold-label/100 W broadcast feature. The
     // worker is only activated for a charging session and exits with the daemon.
@@ -204,9 +219,15 @@ fn run_unix(
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
 
     while running.load(Ordering::Relaxed) {
-        let nfds = match event_monitor
-            .wait_events(&mut events, epoll_timeout(phase, detach_deadline))
-        {
+        let nfds = match event_monitor.wait_events(
+            &mut events,
+            epoll_timeout(
+                phase,
+                detach_deadline,
+                uevent_recheck_deadline,
+                charger_detach_deadline,
+            ),
+        ) {
             Ok(count) => count,
             Err(error) => {
                 if matches!(error.raw_os_error(), Some(code) if code == libc::EINTR || code == libc::EAGAIN)
@@ -254,6 +275,8 @@ fn run_unix(
             mode = new_mode;
             attached = is_attached()?;
             detach_deadline = None;
+            public_retry_attempted = false;
+            charger_detach_deadline = None;
             phase = match (mode, attached) {
                 (ChargingMode::Automatic, true) => {
                     AutoPhase::WaitingNative(Instant::now() + NATIVE_NEGOTIATION_TIMEOUT)
@@ -293,6 +316,13 @@ fn run_unix(
                     break;
                 }
             }
+            // The first read below may race the driver update. Arm one bounded
+            // follow-up read; do not move an existing deadline for noisy bursts.
+            uevent_recheck_deadline.get_or_insert_with(|| Instant::now() + UEVENT_SETTLE_DELAY);
+        }
+
+        if uevent_recheck_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            uevent_recheck_deadline = None;
         }
 
         let physically_attached = is_attached()?;
@@ -308,6 +338,8 @@ fn run_unix(
                     pd_verifier.set_pd_verified(false)?;
                     info!("[自动] 已拔出，恢复小米协议优先基线");
                 }
+                public_retry_attempted = false;
+                charger_detach_deadline = None;
                 stop_charging_session(
                     &mut charging_session_active,
                     &session_active,
@@ -319,6 +351,8 @@ fn run_unix(
             detach_deadline = None;
             if !attached {
                 attached = true;
+                public_retry_attempted = false;
+                charger_detach_deadline = None;
                 if mode == ChargingMode::Automatic {
                     phase = AutoPhase::WaitingNative(Instant::now() + NATIVE_NEGOTIATION_TIMEOUT);
                     info!("[自动] 检测到连接，等待小米协议认证");
@@ -335,7 +369,30 @@ fn run_unix(
         }
 
         if mode != ChargingMode::Automatic || !attached {
+            charger_detach_deadline = None;
             continue;
+        }
+
+        // A USB meter can keep Type-C physically attached while its upstream
+        // charger is unplugged. Treat a stable loss of the charger as the end
+        // of the retry session, but never do this during our intentional power
+        // suspension where the same node changes are expected briefly.
+        if matches!(phase, AutoPhase::Settled) && public_retry_attempted {
+            let verified = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
+            let usb_type = FileMonitor::read_file_content(USB_REAL_TYPE_PATH)?;
+            if verified == "0" && usb_type == "Unknown" {
+                let deadline =
+                    charger_detach_deadline.get_or_insert_with(|| Instant::now() + DETACH_DEBOUNCE);
+                if Instant::now() >= *deadline {
+                    public_retry_attempted = false;
+                    charger_detach_deadline = None;
+                    info!("[自动] 检测到充电器已从转接设备断开，允许下次公版PPS重连");
+                }
+            } else {
+                charger_detach_deadline = None;
+            }
+        } else {
+            charger_detach_deadline = None;
         }
 
         phase = match phase {
@@ -347,6 +404,7 @@ fn run_unix(
                     let usb_type = FileMonitor::read_file_content(USB_REAL_TYPE_PATH)?;
                     if usb_type == "PD_PPS" {
                         info!("[自动] 未检测到小米认证，开始一次公版PPS软件重连");
+                        public_retry_attempted = true;
                         set_input_suspended(true)?;
                         AutoPhase::Suspended(Instant::now() + RECONNECT_STEP_DELAY)
                     } else {
@@ -365,6 +423,18 @@ fn run_unix(
                 set_input_suspended(false)?;
                 info!("[自动] 公版PPS软件重连完成，本次连接不再重试");
                 AutoPhase::Settled
+            }
+            AutoPhase::Settled if !public_retry_attempted => {
+                let verified = FileMonitor::read_file_content(PD_VERIFIED_PATH)?;
+                let usb_type = FileMonitor::read_file_content(USB_REAL_TYPE_PATH)?;
+                if verified != "1" && usb_type == "PD_PPS" {
+                    info!("[自动] 已连接设备后检测到公版PPS，开始一次软件重连");
+                    public_retry_attempted = true;
+                    set_input_suspended(true)?;
+                    AutoPhase::Suspended(Instant::now() + RECONNECT_STEP_DELAY)
+                } else {
+                    AutoPhase::Settled
+                }
             }
             other => other,
         };
